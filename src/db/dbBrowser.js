@@ -2,6 +2,7 @@
 
 const config = require('../config/config');
 const { docker } = require('../docker/docker');
+const databasesRegistry = require('../config/databases');
 
 /**
  * TEMUAN PENTING (tes nyata, bukan asumsi): Companion API jalan sebagai proses
@@ -187,6 +188,25 @@ async function listSchemas(databaseUuid) {
 }
 
 /**
+ * Gabungan buat UI "Kelola Container Database" yang lebih simpel -- 1 fungsi
+ * yang ngasih semua info yang dibutuhin: nama database (dari MySQL, live),
+ * mana yang "default" (dibuat Coolify sendiri, ada di internal_db_url), dan
+ * mana yang numpang (ada entry kredensial di databases.json registry).
+ */
+async function listDatabasesInContainer(databaseUuid) {
+  const { connectionString } = await fetchConnectionInfo(databaseUuid);
+  const defaultSchemaName = decodeURIComponent(new URL(connectionString).pathname.replace(/^\//, ''));
+  const allSchemas = await listSchemas(databaseUuid);
+  const registryEntries = databasesRegistry.listEntriesForContainer(databaseUuid);
+
+  return allSchemas.map((name) => ({
+    name,
+    isDefault: name === defaultSchemaName,
+    hasCredentials: name === defaultSchemaName || registryEntries.some((e) => e.name === name),
+  }));
+}
+
+/**
  * Bikin schema (database) + user baru DI SERVER MySQL yang UDAH ADA --
  * "numpang" 1 mysqld buat banyak project, gak bikin container baru tiap
  * project (hemat RAM, sama pola kayak vps-manager lama). SENGAJA endpoint
@@ -221,7 +241,41 @@ async function createSchema(databaseUuid, { newDbName, newUser, newPassword }) {
     await conn.end().catch(() => {});
   }
 
+  // Simpen kredensial ke registry -- TANPA ini, browse/query ke database baru
+  // ini bakal "Access denied" karena user default Coolify gak punya akses ke
+  // sini (temuan nyata, 4 Agustus 2026).
+  databasesRegistry.upsertEntry({ containerUuid: databaseUuid, name: newDbName, username: newUser, password: newPassword });
+
   return { newDbName, newUser };
+}
+
+/**
+ * Hapus database + user yang numpang di 1 Container Database. DROP DATABASE
+ * (data ilang permanen) + DROP USER (kredensial yang dibuat createSchema).
+ * Registry entry di databases.json dihapus di level route (bukan di sini),
+ * biar fungsi ini murni operasi DB doang.
+ */
+async function dropSchema(databaseUuid, dbName, username) {
+  assertSafeIdentifier(dbName, 'Nama database');
+
+  const { connectionString, databaseType } = await fetchRootConnectionInfo(databaseUuid);
+  const resolved = await rewriteConnectionStringHost(connectionString);
+  const t = (databaseType || '').toLowerCase();
+
+  if (!t.includes('mysql') && !t.includes('mariadb')) {
+    throw new Error(`[dbBrowser] dropSchema belum didukung buat database_type "${databaseType}" (baru MySQL/MariaDB).`);
+  }
+
+  const mysql = require('mysql2/promise');
+  const conn = await mysql.createConnection(resolved);
+  try {
+    await conn.query(`DROP DATABASE IF EXISTS \`${dbName}\``);
+    if (username) {
+      await conn.query('DROP USER IF EXISTS ?@?', [username, '%']);
+    }
+  } finally {
+    await conn.end().catch(() => {});
+  }
 }
 
 /**
@@ -309,22 +363,37 @@ function pickDriver(databaseType) {
 }
 
 /**
- * schemaOverride (BARU, 4 Agustus 2026): buat project yang "numpang" 1 server
- * MySQL (bukan schema default Coolify) -- ganti path connection string ke
- * schema yang bener SEBELUM connect. TANPA ini, query bakal jalan ke schema
- * default server itu (mungkin punya project LAIN), bukan schema project yang
- * dimaksud -- silent-wrong yang paling bahaya (query "berhasil", tapi data
- * project yang salah). WAJIB dipakai kalau project.schemaName keisi.
+ * schemaOverride (4 Agustus 2026, DIPERBAIKI): buat database yang numpang 1
+ * Container Database (bukan database default Coolify). FIX PENTING: user
+ * default Coolify (dari internal_db_url) CUMA di-GRANT ke database aslinya,
+ * BUKAN ke database numpang yang dibuat manual -- connect pakai user itu ke
+ * schema numpang bakal "Access denied", walau host/port-nya sama persis.
+ *
+ * Sekarang resolve kredensial dari databases.js registry (dibuat pas
+ * createSchema) -- itu kredensial YANG BENERAN py akses ke database numpang
+ * itu, host/port tetap diambil live dari internal_db_url (cuma username/
+ * password yang diganti).
  */
 async function runSelectQuery(databaseUuid, sql, schemaOverride) {
   assertSafeSelect(sql);
 
   const { connectionString, databaseType } = await fetchConnectionInfo(databaseUuid);
   let finalConnectionString = connectionString;
+
   if (schemaOverride) {
     assertSafeIdentifier(schemaOverride, 'Nama schema');
+    const entry = databasesRegistry.findEntry(databaseUuid, schemaOverride);
     const url = new URL(connectionString);
     url.pathname = `/${schemaOverride}`;
+    if (entry) {
+      // Database numpang -- WAJIB pakai kredensial dari registry, bukan
+      // user default (gak punya akses ke sini).
+      url.username = entry.username;
+      url.password = encodeURIComponent(entry.password);
+    }
+    // Kalau gak ketemu di registry, anggap schemaOverride itu database
+    // DEFAULT Coolify sendiri (bukan numpang) -- tetap pakai user default,
+    // cuma ganti nama database di path (perilaku lama, tetap didukung).
     finalConnectionString = url.toString();
   }
 
@@ -343,36 +412,35 @@ async function runSelectQuery(databaseUuid, sql, schemaOverride) {
 }
 
 /**
- * SENGAJA fungsi TERPISAH dari runSelectQuery, BUKAN buka pintu mutation
- * umum. Cuma bisa jalanin 1 hal spesifik: ALTER USER buat ganti password
- * user yang sama persis kayak yang ada di internal_db_url (username diambil
- * dari situ, BUKAN dari input user - user cuma kasih password baru).
- * confirmed:true wajib (lihat commandPolicy.js) - ganti password disconnect
- * semua koneksi yang masih pakai password lama sampai env di-update.
+ * FIX (4 Agustus 2026): sebelumnya connect PAKAI USER ITU SENDIRI buat ganti
+ * password sendiri (self-alter) -- masalahnya kalau password udah kadung
+ * drift (mis. percobaan sebelumnya sukses ALTER USER tapi gagal di step
+ * lain), koneksi self-connect gagal duluan sebelum sempat benerin apapun
+ * (ayam-telor: butuh password baru buat connect, tapi mau connect buat ganti
+ * password). Sekarang pakai koneksi ROOT (gak pernah kesentuh/drift), bisa
+ * connect & benerin siapapun -- termasuk recover dari kondisi drift lama.
  */
 async function resetPassword(databaseUuid, newPassword) {
-  const { connectionString, databaseType } = await fetchConnectionInfo(databaseUuid);
-  const resolvedConnectionString = await rewriteConnectionStringHost(connectionString);
-  const username = decodeURIComponent(new URL(connectionString).username);
+  const { connectionString: appConnectionString, databaseType } = await fetchConnectionInfo(databaseUuid);
+  const username = decodeURIComponent(new URL(appConnectionString).username);
 
   const t = (databaseType || '').toLowerCase();
 
   if (t.includes('mysql') || t.includes('mariadb')) {
+    const { connectionString: rootConnectionString } = await fetchRootConnectionInfo(databaseUuid);
+    const resolved = await rewriteConnectionStringHost(rootConnectionString);
     const mysql = require('mysql2/promise');
-    const conn = await mysql.createConnection(resolvedConnectionString);
+    const conn = await mysql.createConnection(resolved);
     try {
       // Placeholder ? di posisi account-spec ('user'@'host') tetap aman --
       // mysql2 auto-quote string value, hasilnya persis syntax yang dibutuhin.
       await conn.query('ALTER USER ?@? IDENTIFIED BY ?', [username, '%', newPassword]);
-      // FIX (4 Agustus 2026): FLUSH PRIVILEGES DIHAPUS -- itu gak diperlukan
-      // sama sekali setelah ALTER USER (beda dari cara lama edit tabel
-      // mysql.user langsung), DAN gagal ("need RELOAD privilege") karena
-      // user app (bukan root) emang gak dikasih privilege RELOAD. ALTER USER
-      // udah langsung efektif tanpa flush apapun.
+      // FLUSH PRIVILEGES gak diperlukan setelah ALTER USER -- efektif langsung.
     } finally {
       await conn.end().catch(() => {});
     }
   } else if (t.includes('postgres')) {
+    const resolvedConnectionString = await rewriteConnectionStringHost(appConnectionString);
     const { Client } = require('pg');
     const client = new Client({ connectionString: resolvedConnectionString });
     await client.connect();
@@ -391,4 +459,12 @@ async function resetPassword(databaseUuid, newPassword) {
   return { username };
 }
 
-module.exports = { getLiveConnectionString, runSelectQuery, resetPassword, listSchemas, createSchema };
+module.exports = {
+  getLiveConnectionString,
+  runSelectQuery,
+  resetPassword,
+  listSchemas,
+  createSchema,
+  dropSchema,
+  listDatabasesInContainer,
+};
