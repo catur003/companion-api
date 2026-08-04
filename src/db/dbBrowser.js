@@ -515,21 +515,31 @@ async function getConnectionInfoForDatabase(databaseUuid, dbName) {
  */
 /**
  * Sanitasi dasar sebelum dikirim ke server - BUKAN full SQL parser, cuma
- * nutup penyebab paling umum "syntax error near ''":
- * - BOM (byte order mark) di awal file, kadang nempel dari editor tertentu
- * - baris "DELIMITER ..." - itu perintah KHUSUS CLI `mysql`, bukan SQL asli,
- *   server gak ngerti itu (dipakai dump yang ada stored procedure/trigger -
- *   FITUR INI BELUM DUKUNG itu, cuma dibuang biar gak bikin syntax error,
- *   bukan di-eksekusi sebagai perubahan delimiter beneran)
- * - statement kosong berturutan (";;" jadi ";") - MySQL nolak "near ''" buat ini
+ * nutup penyebab yang KEBUKTI dari file test nyata (4 Agustus 2026, dump
+ * dari mariadb-dump Android/Termux): baris komentar versi-spesifik MariaDB
+ * (mis. "/*M!999999...*\/" , "/*!40101 SET...*\/;") gak semua dikenali sama
+ * kalau target server-nya MySQL biasa (bukan MariaDB) - bikin parser nyangkut.
+ *
+ * Cuma buang baris yang ISINYA MURNI KOMENTAR (abis di-trim, seluruh baris
+ * cocok pola komentar) - SENGAJA gak nyentuh baris yang ada komentar +
+ * SQL asli dicampur, biar gak resiko ngerusak data di dalam string literal
+ * yang kebetulan ngandung "--" atau "/*" (itu butuh SQL tokenizer beneran
+ * buat dibedain aman, di luar scope tool ini).
  */
 function sanitizeSqlContent(raw) {
-  let text = raw.replace(/^\uFEFF/, ''); // buang BOM
-  text = text
-    .split('\n')
-    .filter((line) => !/^\s*DELIMITER\s+/i.test(line))
-    .join('\n');
-  text = text.replace(/;\s*;+/g, ';'); // gabung ";;" jadi ";"
+  let text = raw.replace(/^\uFEFF/, ''); // buang BOM kalau ada
+
+  const lines = text.split('\n').filter((line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return true; // baris kosong aman, biarin
+    if (/^--/.test(trimmed)) return false; // baris komentar "-- ..." utuh
+    if (/^DELIMITER\s+/i.test(trimmed)) return false; // perintah CLI mysql, bukan SQL asli
+    if (/^\/\*[\s\S]*\*\/;?$/.test(trimmed)) return false; // baris komentar "/* ... */" atau "/*!.../*" atau "/*M!.../*" UTUH (bukan campur SQL lain)
+    return true;
+  });
+
+  text = lines.join('\n');
+  text = text.replace(/;\s*;+/g, ';'); // jaga-jaga sisa ";;" kalau ada
   return text.trim();
 }
 
