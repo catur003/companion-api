@@ -1,6 +1,60 @@
 'use strict';
 
 const config = require('../config/config');
+const { docker } = require('../docker/docker');
+
+/**
+ * TEMUAN PENTING (tes nyata, bukan asumsi): Companion API jalan sebagai proses
+ * Node biasa di HOST VPS (via pm2/npm start, sesuai Bagian 7 dokumen), BUKAN
+ * sebagai container Docker. Hostname di "internal_db_url" (mis.
+ * "w9j9c3qkkpfg9r3tco4st5f8") itu Docker-internal DNS name -- cuma bisa
+ * di-resolve dari DALAM container yang nempel ke Docker network yang sama
+ * (embedded DNS Docker di 127.0.0.11). Proses host biasa gak punya akses ke
+ * situ -- gagal dengan getaddrinfo EAI_AGAIN, bukan bug di kode ini.
+ *
+ * Fix: resolve IP container-nya manual lewat Docker API (docker inspect via
+ * dockerode), ganti hostname di connection string jadi IP langsung sebelum
+ * connect -- bypass DNS OS sepenuhnya.
+ */
+async function resolveDockerHostToIp(hostname) {
+  const containers = await docker.listContainers({ all: false });
+
+  const match = containers.find((c) => {
+    const nameMatch = c.Names.some((n) => n.replace(/^\//, '') === hostname);
+    const aliasMatch = Object.values(c.NetworkSettings?.Networks || {}).some((net) =>
+      (net.Aliases || []).includes(hostname)
+    );
+    return nameMatch || aliasMatch;
+  });
+
+  if (!match) {
+    throw new Error(
+      `Hostname Docker "${hostname}" gak ketemu sebagai container/network alias di host ini -- ` +
+      `pastikan Companion API jalan di VPS yang sama dengan database-nya.`
+    );
+  }
+
+  const networks = match.NetworkSettings?.Networks || {};
+  const ip = Object.values(networks)[0]?.IPAddress;
+  if (!ip) {
+    throw new Error(`Container buat hostname "${hostname}" ketemu, tapi gak punya IP address di network manapun.`);
+  }
+
+  return ip;
+}
+
+async function rewriteConnectionStringHost(connectionString) {
+  const url = new URL(connectionString);
+  const originalHost = url.hostname;
+
+  try {
+    const ip = await resolveDockerHostToIp(originalHost);
+    url.hostname = ip;
+    return url.toString();
+  } catch (err) {
+    throw new Error(`[dbBrowser] Gagal resolve hostname Docker "${originalHost}": ${err.message}`);
+  }
+}
 
 /**
  * CONFIRMED Fase 1 (2026-08-03, tes langsung ke instance Coolify nyata):
@@ -146,9 +200,10 @@ async function runSelectQuery(databaseUuid, sql) {
   assertSafeSelect(sql);
 
   const { connectionString, databaseType } = await fetchConnectionInfo(databaseUuid);
+  const resolvedConnectionString = await rewriteConnectionStringHost(connectionString);
   const execute = pickDriver(databaseType);
 
-  const { rows, columns } = await execute(connectionString, sql);
+  const { rows, columns } = await execute(resolvedConnectionString, sql);
 
   const truncated = rows.length > config.db.maxRows;
   return {
