@@ -137,24 +137,59 @@ function buildSingleFileTar(filename, content) {
  * process env var langsung (docker run -e), bukan file.
  *
  * /proc/1/environ SELALU ada di container Linux manapun (mekanisme kernel,
- * bukan tergantung cara inject Coolify) -- baca file spesial ini buat lihat
- * value ASLI yang beneran aktif di proses yang jalan sekarang.
+ * bukan tergantung cara inject Coolify) -- tapi TERBUKTI (tes nyata, 404)
+ * getArchive() GAK BISA baca ini -- /proc itu virtual filesystem kernel,
+ * bukan bagian dari layer filesystem container yang di-mount ke host (beda
+ * dari file biasa kayak package.json). getArchive/docker cp cuma bisa liat
+ * rootfs container, bukan "pandangan dari dalam proses yang jalan".
  *
- * SENGAJA di luar resolveSafePath (root /app) -- WHITELIST EKSPLISIT 1 path
- * doang, bukan buka akses baca semua file di container. Beda total dari
- * proteksi umum readFile/writeFile.
+ * FIX: pakai `docker exec` bentuk ARRAY Cmd (['cat', '/proc/1/environ']),
+ * SAMA pola amannya kayak listDirectoryByContainerId di docker.js (bukan
+ * shell string) -- exec berjalan DI DALAM namespace container, /proc
+ * kebaca dari situ. Path di sini FIXED/hardcode, bukan dari input user sama
+ * sekali, jadi gak ada permukaan injeksi apapun terlepas dari cara exec-nya.
  */
 async function readProcessEnviron(applicationUuid) {
-  const PROC_ENVIRON_PATH = '/proc/1/environ';
   try {
     const containerId = await resolveContainerIdByAppUuid(applicationUuid);
     const container = docker.getContainer(containerId);
-    const stream = await container.getArchive({ path: PROC_ENVIRON_PATH });
-    const buffer = await extractSingleFileFromTarAsBuffer(stream);
+    const exec = await container.exec({
+      Cmd: ['cat', '/proc/1/environ'],
+      AttachStdout: true,
+      AttachStderr: true,
+    });
+
+    const stream = await exec.start({});
+    const chunks = [];
+    await new Promise((resolve, reject) => {
+      stream.on('data', (chunk) => chunks.push(chunk));
+      stream.on('end', resolve);
+      stream.on('error', reject);
+    });
+
+    // Demux format multiplexed Docker exec (8-byte header per frame, sama
+    // kayak listDirectoryByContainerId) -- environ isinya binary-safe text,
+    // jangan langsung toString tanpa demux dulu.
+    const raw = Buffer.concat(chunks);
+    const bodyChunks = [];
+    let offset = 0;
+    while (offset + 8 <= raw.length) {
+      const frameLength = raw.readUInt32BE(offset + 4);
+      const start = offset + 8;
+      const end = start + frameLength;
+      bodyChunks.push(raw.slice(start, Math.min(end, raw.length)));
+      offset = end;
+    }
+    const body = bodyChunks.length > 0 ? Buffer.concat(bodyChunks) : raw;
+
+    const info = await exec.inspect();
+    if (info.ExitCode !== 0) {
+      throw new Error(`cat /proc/1/environ gagal (exit code ${info.ExitCode})`);
+    }
 
     // Format /proc/*/environ: "KEY1=VAL1\0KEY2=VAL2\0...\0" -- pisah NUL byte,
     // BUKAN newline (value env bisa aja ngandung newline literal di dalamnya).
-    return buffer
+    return body
       .toString('utf8')
       .split('\0')
       .filter((entry) => entry.length > 0)
