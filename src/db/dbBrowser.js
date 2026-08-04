@@ -514,29 +514,45 @@ async function getConnectionInfoForDatabase(databaseUuid, dbName) {
  * caller (route) yang motong pesan errornya kalau kepanjangan.
  */
 /**
- * Sanitasi dasar sebelum dikirim ke server - BUKAN full SQL parser, cuma
- * nutup penyebab yang KEBUKTI dari file test nyata (4 Agustus 2026, dump
- * dari mariadb-dump Android/Termux): baris komentar versi-spesifik MariaDB
- * (mis. "/*M!999999...*\/" , "/*!40101 SET...*\/;") gak semua dikenali sama
- * kalau target server-nya MySQL biasa (bukan MariaDB) - bikin parser nyangkut.
+ * FIX (4 Agustus 2026, ketemu dari tes nyata): sebelumnya SEMUA baris
+ * "/* ... *\/" dianggap komentar dekoratif & dibuang total - SALAH buat
+ * "/*!NNNNNN ... *\/" (versi-comment NATIVE MySQL, tanpa "M"). Itu BUKAN
+ * dekorasi, itu SQL ASLI yang dibungkus biar kompatibel versi lama - MySQL
+ * beneran JALANIN isinya (contoh nyata: "/*!40014 SET
+ * FOREIGN_KEY_CHECKS=0 *\/;" - itu yang matiin cek foreign key sementara
+ * biar urutan insert antar tabel gak masalah). Kebuang -> constraint balik
+ * aktif -> "foreign key constraint fails" walau urutan datanya sebenernya
+ * benar dari sononya.
  *
- * Cuma buang baris yang ISINYA MURNI KOMENTAR (abis di-trim, seluruh baris
- * cocok pola komentar) - SENGAJA gak nyentuh baris yang ada komentar +
- * SQL asli dicampur, biar gak resiko ngerusak data di dalam string literal
- * yang kebetulan ngandung "--" atau "/*" (itu butuh SQL tokenizer beneran
- * buat dibedain aman, di luar scope tool ini).
+ * Sekarang dibedain 3 kelas:
+ * 1. "/*!NNNNN ... *\/" (native MySQL, TANPA "M") -> DI-UNWRAP, isinya
+ *    tetap dijalanin (buka bungkusnya doang, bukan dihapus)
+ * 2. "/*M!NNNNN ... *\/" (MariaDB-only, ADA "M") -> DIBUANG - isinya bisa
+ *    syntax/variable yang gak dikenal MySQL biasa (mis. NOTE_VERBOSITY),
+ *    lebih aman dibuang daripada dijalanin & gagal beda lagi
+ * 3. Komentar polos ("-- ..." atau "/* teks biasa *\/" tanpa "!") -> DIBUANG
  */
 function sanitizeSqlContent(raw) {
   let text = raw.replace(/^\uFEFF/, ''); // buang BOM kalau ada
 
-  const lines = text.split('\n').filter((line) => {
+  const lines = text.split('\n').map((line) => {
     const trimmed = line.trim();
-    if (!trimmed) return true; // baris kosong aman, biarin
-    if (/^--/.test(trimmed)) return false; // baris komentar "-- ..." utuh
-    if (/^DELIMITER\s+/i.test(trimmed)) return false; // perintah CLI mysql, bukan SQL asli
-    if (/^\/\*[\s\S]*\*\/;?$/.test(trimmed)) return false; // baris komentar "/* ... */" atau "/*!.../*" atau "/*M!.../*" UTUH (bukan campur SQL lain)
-    return true;
-  });
+    if (!trimmed) return line;
+    if (/^--/.test(trimmed)) return null; // komentar "-- ..." utuh -> buang
+    if (/^DELIMITER\s+/i.test(trimmed)) return null; // perintah CLI mysql, bukan SQL asli
+
+    // Native MySQL version-comment ("/*!NNNNN ... */") - UNWRAP, bukan buang.
+    const nativeMatch = trimmed.match(/^\/\*!\d+\s+([\s\S]*?)\*\/;?$/);
+    if (nativeMatch) return nativeMatch[1].trim() + ';';
+
+    // MariaDB-only version-comment ("/*M!NNNNN ... */") - buang total.
+    if (/^\/\*M!\d+[\s\S]*\*\/;?$/.test(trimmed)) return null;
+
+    // Komentar blok polos tanpa "!" - buang total.
+    if (/^\/\*[\s\S]*\*\/;?$/.test(trimmed)) return null;
+
+    return line;
+  }).filter((line) => line !== null);
 
   text = lines.join('\n');
   text = text.replace(/;\s*;+/g, ';'); // jaga-jaga sisa ";;" kalau ada
