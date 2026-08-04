@@ -501,6 +501,63 @@ async function getConnectionInfoForDatabase(databaseUuid, dbName) {
   };
 }
 
+/**
+ * Import file .sql - PAKAI mysql2 langsung (multipleStatements: true),
+ * BUKAN docker exec/mysqldump CLI. Alasan: kita udah punya koneksi TCP
+ * langsung ke MySQL (sama pola kayak semua fitur browse/query lain) --
+ * gak perlu masuk ke filesystem container/shell sama sekali. Isi file
+ * dikirim APA ADANYA sebagai 1 multi-statement query (bukan di-parse/
+ * divalidasi kayak assertSafeSelect -- ini SENGAJA "percaya penuh" isi file,
+ * beda kelas dari endpoint lain, makanya wajib confirmed:true di level route).
+ *
+ * Kalau ada statement yang gagal di tengah, mysql2 berhenti & throw --
+ * caller (route) yang motong pesan errornya kalau kepanjangan.
+ */
+async function importSqlContent(databaseUuid, dbName, sqlContent) {
+  const info = await getConnectionInfoForDatabase(databaseUuid, dbName);
+  const url = new URL(info.connectionString);
+  const resolvedHost = await resolveDockerHostToIp(url.hostname).catch(() => url.hostname);
+
+  const mysql = require('mysql2/promise');
+  const conn = await mysql.createConnection({
+    host: resolvedHost,
+    port: Number(url.port) || 3306,
+    user: info.username,
+    password: info.password,
+    database: info.database,
+    multipleStatements: true,
+  });
+  try {
+    await conn.query(sqlContent);
+  } finally {
+    await conn.end().catch(() => {});
+  }
+}
+
+/**
+ * Export database jadi dump .sql - pakai package "mysqldump" (JS murni,
+ * connect TCP biasa, BUKAN spawn binary mysqldump/docker exec). Konsisten
+ * sama pola koneksi yang lain, gak ada dependency ke tool CLI di container.
+ */
+async function exportDatabase(databaseUuid, dbName) {
+  const info = await getConnectionInfoForDatabase(databaseUuid, dbName);
+  const url = new URL(info.connectionString);
+  const resolvedHost = await resolveDockerHostToIp(url.hostname).catch(() => url.hostname);
+
+  const mysqldump = require('mysqldump');
+  const result = await mysqldump({
+    connection: {
+      host: resolvedHost,
+      port: Number(url.port) || 3306,
+      user: info.username,
+      password: info.password,
+      database: info.database,
+    },
+  });
+
+  return result.dump.schema + '\n' + result.dump.data;
+}
+
 module.exports = {
   getLiveConnectionString,
   runSelectQuery,
@@ -510,4 +567,6 @@ module.exports = {
   dropSchema,
   listDatabasesInContainer,
   getConnectionInfoForDatabase,
+  importSqlContent,
+  exportDatabase,
 };

@@ -27,6 +27,11 @@ const POLICY = Object.freeze({
   // CREATE DATABASE + CREATE USER + GRANT ke database itu doang (via koneksi
   // root, scoped ketat) - bikin kredensial baru, wajib konfirmasi.
   'db:create-schema': { confirmRequired: true, auditLevel: 'warn' },
+  // Import: eksekusi ISI FILE MENTAH (bukan query dibatasi kayak yang lain) -
+  // paling "terbuka" dari semua endpoint, wajib konfirmasi.
+  'db:import': { confirmRequired: true, auditLevel: 'warn' },
+  // Export: read-only (dump doang), gak perlu konfirmasi.
+  'db:export': { confirmRequired: false, auditLevel: 'info' },
 
   'db:migrate:generate': { confirmRequired: false, auditLevel: 'info' },
   'db:migrate:push': { confirmRequired: false, auditLevel: 'info' },
