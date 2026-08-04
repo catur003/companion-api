@@ -79,6 +79,46 @@ function extractSingleFileFromTar(tarStream) {
 }
 
 /**
+ * Ekstrak isi 1 file dari tar stream sebagai Buffer mentah (bukan string) --
+ * dipakai buat /proc/1/environ yang separator-nya NUL byte, bukan newline,
+ * jadi gak bisa asal di-toString('utf8') dulu terus split('\n').
+ */
+function extractSingleFileFromTarAsBuffer(tarStream) {
+  return new Promise((resolve, reject) => {
+    const extract = tar.extract();
+    let fileBuffer = null;
+    let sawEntry = false;
+
+    extract.on('entry', (header, stream, next) => {
+      if (header.type === 'file' && !sawEntry) {
+        sawEntry = true;
+        const chunks = [];
+        stream.on('data', (chunk) => chunks.push(chunk));
+        stream.on('end', () => {
+          fileBuffer = Buffer.concat(chunks);
+          next();
+        });
+        stream.on('error', reject);
+      } else {
+        stream.on('end', next);
+        stream.resume();
+      }
+    });
+
+    extract.on('finish', () => {
+      if (fileBuffer === null) {
+        reject(new Error('Tidak ada file ditemukan di response archive.'));
+      } else {
+        resolve(fileBuffer);
+      }
+    });
+
+    extract.on('error', reject);
+    tarStream.pipe(extract);
+  });
+}
+
+/**
  * Bungkus 1 file jadi tar stream, siap dikirim ke putArchive().
  */
 function buildSingleFileTar(filename, content) {
@@ -86,6 +126,48 @@ function buildSingleFileTar(filename, content) {
   pack.entry({ name: filename }, content);
   pack.finalize();
   return pack;
+}
+
+/**
+ * Baca env var PROSES YANG BENERAN JALAN, bukan konfigurasi Coolify (beda
+ * sumber, beda makna). Alasan (4 Agustus 2026): Coolify API-nya (GET /envs)
+ * SENGAJA gak pernah kirim field "value" -- keputusan keamanan Coolify,
+ * bukan bug kita. Filesystem app juga gak punya file .env fisik (dicek
+ * langsung lewat file explorer, kosong) -- confirmed env disuntik sebagai
+ * process env var langsung (docker run -e), bukan file.
+ *
+ * /proc/1/environ SELALU ada di container Linux manapun (mekanisme kernel,
+ * bukan tergantung cara inject Coolify) -- baca file spesial ini buat lihat
+ * value ASLI yang beneran aktif di proses yang jalan sekarang.
+ *
+ * SENGAJA di luar resolveSafePath (root /app) -- WHITELIST EKSPLISIT 1 path
+ * doang, bukan buka akses baca semua file di container. Beda total dari
+ * proteksi umum readFile/writeFile.
+ */
+async function readProcessEnviron(applicationUuid) {
+  const PROC_ENVIRON_PATH = '/proc/1/environ';
+  try {
+    const containerId = await resolveContainerIdByAppUuid(applicationUuid);
+    const container = docker.getContainer(containerId);
+    const stream = await container.getArchive({ path: PROC_ENVIRON_PATH });
+    const buffer = await extractSingleFileFromTarAsBuffer(stream);
+
+    // Format /proc/*/environ: "KEY1=VAL1\0KEY2=VAL2\0...\0" -- pisah NUL byte,
+    // BUKAN newline (value env bisa aja ngandung newline literal di dalamnya).
+    return buffer
+      .toString('utf8')
+      .split('\0')
+      .filter((entry) => entry.length > 0)
+      .map((entry) => {
+        const idx = entry.indexOf('=');
+        if (idx === -1) return { key: entry, value: '' };
+        return { key: entry.slice(0, idx), value: entry.slice(idx + 1) };
+      });
+  } catch (err) {
+    throw new Error(
+      `Gagal baca /proc/1/environ di app "${applicationUuid}" -- cek app masih jalan. (${err.message})`
+    );
+  }
 }
 
 async function readFile(applicationUuid, relativePath) {
@@ -126,4 +208,4 @@ async function writeFile(applicationUuid, relativePath, content) {
   }
 }
 
-module.exports = { readFile, writeFile, resolveSafePath };
+module.exports = { readFile, writeFile, resolveSafePath, readProcessEnviron };

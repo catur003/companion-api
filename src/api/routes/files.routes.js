@@ -31,6 +31,28 @@ router.get('/files/list', async (req, res) => {
   }
 });
 
+// GET /files/process-env?applicationUuid=<uuid>
+// Baca /proc/1/environ (env var PROSES YANG BENERAN JALAN, bukan config
+// Coolify) - Coolify API GET /envs sengaja gak pernah kirim field "value"
+// (keputusan keamanan mereka). Whitelist eksplisit 1 path ini doang, di
+// luar root /app - lihat catatan detail di fileManager.js.
+router.get('/files/process-env', async (req, res) => {
+  const { applicationUuid } = req.query;
+  const policy = checkPolicy('files:read');
+  if (!policy.allowed) {
+    return res.status(403).json({ success: false, message: policy.reason, code: 'POLICY_DENIED', data: null });
+  }
+
+  try {
+    const envs = await fileManager.readProcessEnviron(applicationUuid);
+    audit.record({ action: 'files:process-env', applicationUuid, ok: true, auditLevel: policy.auditLevel });
+    return res.json({ success: true, message: 'OK', code: 'OK', data: { envs } });
+  } catch (err) {
+    audit.record({ action: 'files:process-env', applicationUuid, ok: false, error: err.message });
+    return res.status(501).json({ success: false, message: err.message, code: 'NOT_READY', data: null });
+  }
+});
+
 // GET /files?applicationUuid=<uuid_coolify>&path=Y
 // UBAH (4 Agustus 2026): dulu "container" (Docker container ID mentah) --
 // BASI begitu ada redeploy, ID-nya berubah tiap kali (lihat docker.js).
