@@ -55,4 +55,57 @@ function listProjects() {
   return parsed;
 }
 
-module.exports = { listProjects, getProjectsFilePath };
+/**
+ * Tambah/update 1 entry (match by "key") - dipanggil dari UI ZenVPS
+ * "Kelola Mapping Project" (4 Agustus 2026), gantiin ritual SSH+nano manual.
+ * SENGAJA gak ada auto-detect/heuristik nama-cocokin app<->database di sini
+ * -- applicationUuid & databaseUuid WAJIB dipilih eksplisit sama user di
+ * ZenVPS (dari daftar asli Coolify API), bukan ditebak dari kemiripan nama.
+ * Heuristik nama itu resikonya silent-wrong (app ke-pasang DB yang salah
+ * tanpa ada tanda error) -- dihindari sesuai diskusi sebelumnya.
+ */
+function upsertProject(entry) {
+  if (!entry || typeof entry !== 'object') {
+    throw new Error('[projects] Entry harus berupa object.');
+  }
+  if (!entry.key || !entry.name || !entry.applicationUuid) {
+    throw new Error('[projects] Field wajib: key, name, applicationUuid.');
+  }
+
+  const filePath = getProjectsFilePath();
+  let current = [];
+  if (fs.existsSync(filePath)) {
+    current = listProjects();
+  }
+
+  const idx = current.findIndex((p) => p.key === entry.key);
+  const cleaned = {
+    key: entry.key,
+    name: entry.name,
+    applicationUuid: entry.applicationUuid,
+    ...(entry.databaseUuid ? { databaseUuid: entry.databaseUuid } : {}),
+  };
+
+  if (idx >= 0) {
+    current[idx] = cleaned;
+  } else {
+    current.push(cleaned);
+  }
+
+  fs.writeFileSync(filePath, JSON.stringify(current, null, 2) + '\n', 'utf8');
+  return current;
+}
+
+/** Hapus 1 entry by key. */
+function deleteProject(key) {
+  const filePath = getProjectsFilePath();
+  const current = listProjects();
+  const next = current.filter((p) => p.key !== key);
+  if (next.length === current.length) {
+    throw new Error(`[projects] Key "${key}" gak ketemu.`);
+  }
+  fs.writeFileSync(filePath, JSON.stringify(next, null, 2) + '\n', 'utf8');
+  return next;
+}
+
+module.exports = { listProjects, getProjectsFilePath, upsertProject, deleteProject };

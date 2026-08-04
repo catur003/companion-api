@@ -21,12 +21,27 @@ const POLICY = Object.freeze({
   'db:query:select': { confirmRequired: false, auditLevel: 'info' },
   'db:query:mutate': { confirmRequired: true, auditLevel: 'warn' },
 
+  'db:migrate:generate': { confirmRequired: false, auditLevel: 'info' },
   'db:migrate:push': { confirmRequired: false, auditLevel: 'info' },
   'db:migrate:push_force': { confirmRequired: true, auditLevel: 'warn' },
-  'db:migrate:migrate_deploy': { confirmRequired: false, auditLevel: 'info' },
+  // FIX (4 Agustus 2026): key sebelumnya "migrate_deploy" gak pernah match --
+  // commandGenerator.js makein mode "migrate" (bukan "migrate_deploy"), jadi
+  // action yang dicek selalu "db:migrate:migrate", default-deny nolak semua
+  // request mode ini walau harusnya diizinkan. Ketauan dari bug report user.
+  'db:migrate:migrate': { confirmRequired: false, auditLevel: 'info' },
   'db:migrate:seed': { confirmRequired: true, auditLevel: 'warn' },
+  // Command custom (bukan hasil generateCommand) - user compose/gabung sendiri
+  // (mis. "push && seed" jadi 1 command biar gak 2x redeploy). SELALU minta
+  // konfirmasi eksplisit, terlepas isinya apa - beda dari mode terstruktur di
+  // atas yang udah diverifikasi commandGenerator.js, ini sepenuhnya kontrol user.
+  'db:migrate:custom': { confirmRequired: true, auditLevel: 'warn' },
 
   'container:restart-count:read': { confirmRequired: false, auditLevel: 'info' },
+
+  // Edit mapping project (key/name/applicationUuid/databaseUuid) - bukan
+  // aksi destruktif ke infra Coolify/DB manapun, cuma edit file lokal
+  // projects.json. Gak butuh konfirmasi.
+  'projects:write': { confirmRequired: false, auditLevel: 'info' },
 });
 
 function checkPolicy(action) {
