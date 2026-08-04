@@ -88,4 +88,91 @@ async function getRestartCountByAppUuid(applicationUuid) {
   }
 }
 
-module.exports = { docker, getRestartCount, getRestartCountByAppUuid, resolveContainerIdByAppUuid };
+/**
+ * List isi 1 folder di dalam container - pakai `ls -la` lewat Docker exec,
+ * TAPI dalam bentuk ARRAY Cmd (['ls', '-la', '--', path]), BUKAN string
+ * shell ('sh -c "ls " + path). Beda kelas risiko total (Bagian 8, least
+ * privilege): array-Cmd dieksekusi LANGSUNG oleh Docker tanpa shell di
+ * tengah -- karakter shell metachar (;, $(), backtick, dst) di path TIDAK
+ * pernah diinterpretasi jadi command, karena gak ada shell yang mem-parse-nya
+ * sama sekali. "--" mencegah path yang kebetulan diawali "-" dibaca sebagai
+ * flag oleh `ls`. Ini KENAPA fitur ini beda dari peringatan "jangan pakai
+ * docker exec shell" yang ditulis di fileManager.js -- itu soal string shell,
+ * ini murni array argv ke binary.
+ *
+ * Sengaja TIDAK pakai getArchive (Docker Archive API) buat listing -- itu
+ * narik SELURUH isi folder termasuk semua subfolder (bisa ribuan file kalau
+ * kena node_modules), berat & boros. `ls` non-recursive jauh lebih ringan.
+ */
+async function listDirectoryByContainerId(containerId, targetPath) {
+  const container = docker.getContainer(containerId);
+  const exec = await container.exec({
+    Cmd: ['ls', '-la', '--', targetPath],
+    AttachStdout: true,
+    AttachStderr: true,
+  });
+
+  const stream = await exec.start({});
+  const chunks = [];
+  await new Promise((resolve, reject) => {
+    stream.on('data', (chunk) => chunks.push(chunk));
+    stream.on('end', resolve);
+    stream.on('error', reject);
+  });
+
+  // Output dari exec pakai Docker stream multiplexing format (8-byte header
+  // per frame) kalau container gak di-attach TTY -- demux manual biar gak
+  // kecampur byte header aneh di teks hasil `ls`.
+  const raw = Buffer.concat(chunks);
+  let text = '';
+  let offset = 0;
+  while (offset + 8 <= raw.length) {
+    const frameLength = raw.readUInt32BE(offset + 4);
+    const start = offset + 8;
+    const end = start + frameLength;
+    text += raw.slice(start, Math.min(end, raw.length)).toString('utf8');
+    offset = end;
+  }
+  if (!text && raw.length > 0) {
+    // Fallback kalau ternyata bukan format multiplexed (container attach TTY) -- pakai raw apa adanya.
+    text = raw.toString('utf8');
+  }
+
+  const info = await exec.inspect();
+  if (info.ExitCode !== 0) {
+    throw new Error(`ls "${targetPath}" gagal (exit code ${info.ExitCode}): ${text.trim() || '(no output)'}`);
+  }
+
+  return parseLsOutput(text);
+}
+
+/** Parse output `ls -la` jadi array {name, isDirectory, raw} - format standar GNU coreutils (base image Nixpacks pakai Debian/Ubuntu). */
+function parseLsOutput(text) {
+  return text
+    .split('\n')
+    .filter((line) => line.trim() && !line.startsWith('total '))
+    .map((line) => {
+      const parts = line.trim().split(/\s+/);
+      const name = parts.slice(8).join(' ');
+      return {
+        name,
+        isDirectory: line.startsWith('d'),
+        raw: line,
+      };
+    })
+    .filter((entry) => entry.name && entry.name !== '.' && entry.name !== '..');
+}
+
+/** Wrapper: resolve applicationUuid -> container ID aktif, baru list folder. */
+async function listDirectoryByAppUuid(applicationUuid, targetPath) {
+  const containerId = await resolveContainerIdByAppUuid(applicationUuid);
+  return listDirectoryByContainerId(containerId, targetPath);
+}
+
+module.exports = {
+  docker,
+  getRestartCount,
+  getRestartCountByAppUuid,
+  resolveContainerIdByAppUuid,
+  listDirectoryByAppUuid,
+};

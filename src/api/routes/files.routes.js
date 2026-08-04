@@ -2,10 +2,34 @@
 
 const express = require('express');
 const fileManager = require('../../files/fileManager');
+const { listDirectoryByAppUuid } = require('../../docker/docker');
 const { checkPolicy } = require('../commandPolicy');
 const audit = require('../../utils/audit');
 
 const router = express.Router();
+
+// GET /files/list?applicationUuid=<uuid>&path=<relatif ke root app, kosong = root>
+// Beda dari GET /files (baca 1 file) - ini list isi FOLDER, buat file explorer
+// di ZenVPS biar user gak perlu tau/ngetik nama file duluan. Pakai `ls`
+// non-recursive (bukan Docker Archive API) - lihat catatan di docker.js
+// kenapa (listing lewat archive API berat kalau kena node_modules).
+router.get('/files/list', async (req, res) => {
+  const { applicationUuid, path: relativePath } = req.query;
+  const policy = checkPolicy('files:read');
+  if (!policy.allowed) {
+    return res.status(403).json({ success: false, message: policy.reason, code: 'POLICY_DENIED', data: null });
+  }
+
+  try {
+    const target = fileManager.resolveSafePath(relativePath || '.');
+    const entries = await listDirectoryByAppUuid(applicationUuid, target);
+    audit.record({ action: 'files:list', applicationUuid, path: relativePath, ok: true, auditLevel: policy.auditLevel });
+    return res.json({ success: true, message: 'OK', code: 'OK', data: { path: target, entries } });
+  } catch (err) {
+    audit.record({ action: 'files:list', applicationUuid, path: relativePath, ok: false, error: err.message });
+    return res.status(501).json({ success: false, message: err.message, code: 'NOT_READY', data: null });
+  }
+});
 
 // GET /files?applicationUuid=<uuid_coolify>&path=Y
 // UBAH (4 Agustus 2026): dulu "container" (Docker container ID mentah) --
