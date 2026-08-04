@@ -459,6 +459,48 @@ async function resetPassword(databaseUuid, newPassword) {
   return { username };
 }
 
+/**
+ * Ambil info koneksi LENGKAP (host, port, username, password, connection
+ * string siap pakai) buat 1 database di dalam container - BISA DIPANGGIL
+ * KAPAN AJA, bukan cuma sekali pas bikin. Alasan (4 Agustus 2026, feedback
+ * nyata): sebelumnya info ini cuma muncul sekali di popup pas createSchema,
+ * abis itu ilang -- gak ada cara liat lagi, padahal user BUTUH ini buat
+ * susun DATABASE_URL. Database default Coolify -> ambil dari internal_db_url
+ * (live). Database numpang -> ambil dari databases.json registry.
+ */
+async function getConnectionInfoForDatabase(databaseUuid, dbName) {
+  const { connectionString } = await fetchConnectionInfo(databaseUuid);
+  const baseUrl = new URL(connectionString);
+  const defaultSchemaName = decodeURIComponent(baseUrl.pathname.replace(/^\//, ''));
+
+  let username, password;
+  if (dbName === defaultSchemaName) {
+    username = decodeURIComponent(baseUrl.username);
+    password = decodeURIComponent(baseUrl.password);
+  } else {
+    const entry = databasesRegistry.findEntry(databaseUuid, dbName);
+    if (!entry) {
+      throw new Error(`[dbBrowser] Database "${dbName}" gak ketemu di registry -- kemungkinan dibuat di luar fitur "Kelola Container Database".`);
+    }
+    username = entry.username;
+    password = entry.password;
+  }
+
+  const finalUrl = new URL(connectionString);
+  finalUrl.username = username;
+  finalUrl.password = encodeURIComponent(password);
+  finalUrl.pathname = `/${dbName}`;
+
+  return {
+    host: baseUrl.hostname,
+    port: baseUrl.port,
+    username,
+    password,
+    database: dbName,
+    connectionString: finalUrl.toString(),
+  };
+}
+
 module.exports = {
   getLiveConnectionString,
   runSelectQuery,
@@ -467,4 +509,5 @@ module.exports = {
   createSchema,
   dropSchema,
   listDatabasesInContainer,
+  getConnectionInfoForDatabase,
 };

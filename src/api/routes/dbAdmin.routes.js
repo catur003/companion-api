@@ -89,6 +89,27 @@ router.delete('/db/containers/:databaseUuid/databases/:name', async (req, res) =
   }
 });
 
+// GET /db/containers/:databaseUuid/databases/:name/connection
+// Info koneksi LENGKAP (host/port/username/password/connectionString) buat
+// 1 database - BISA dipanggil kapan aja (4 Agustus 2026, feedback: info ini
+// dulu cuma muncul sekali pas bikin, gak ada cara liat lagi).
+router.get('/db/containers/:databaseUuid/databases/:name/connection', async (req, res) => {
+  const policy = checkPolicy('db:list-schemas');
+  if (!policy.allowed) {
+    return res.status(403).json({ success: false, message: policy.reason, code: 'POLICY_DENIED', data: null });
+  }
+
+  try {
+    const info = await dbBrowser.getConnectionInfoForDatabase(req.params.databaseUuid, req.params.name);
+    // Jangan audit.record() password-nya.
+    audit.record({ action: 'db:list-schemas', databaseUuid: req.params.databaseUuid, database: req.params.name, ok: true, auditLevel: policy.auditLevel });
+    return res.json({ success: true, message: 'OK', code: 'OK', data: info });
+  } catch (err) {
+    audit.record({ action: 'db:list-schemas', databaseUuid: req.params.databaseUuid, database: req.params.name, ok: false, error: err.message });
+    return res.status(501).json({ success: false, message: err.message, code: 'NOT_READY', data: null });
+  }
+});
+
 // POST /db/create-schema   body: { databaseUuid, newDbName, newUser, newPassword, confirmed }
 // Bikin schema+user baru DI SERVER MySQL yang UDAH ADA (numpang, gak bikin
 // container baru) - lihat catatan detail di dbBrowser.js (createSchema).
