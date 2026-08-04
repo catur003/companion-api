@@ -513,6 +513,26 @@ async function getConnectionInfoForDatabase(databaseUuid, dbName) {
  * Kalau ada statement yang gagal di tengah, mysql2 berhenti & throw --
  * caller (route) yang motong pesan errornya kalau kepanjangan.
  */
+/**
+ * Sanitasi dasar sebelum dikirim ke server - BUKAN full SQL parser, cuma
+ * nutup penyebab paling umum "syntax error near ''":
+ * - BOM (byte order mark) di awal file, kadang nempel dari editor tertentu
+ * - baris "DELIMITER ..." - itu perintah KHUSUS CLI `mysql`, bukan SQL asli,
+ *   server gak ngerti itu (dipakai dump yang ada stored procedure/trigger -
+ *   FITUR INI BELUM DUKUNG itu, cuma dibuang biar gak bikin syntax error,
+ *   bukan di-eksekusi sebagai perubahan delimiter beneran)
+ * - statement kosong berturutan (";;" jadi ";") - MySQL nolak "near ''" buat ini
+ */
+function sanitizeSqlContent(raw) {
+  let text = raw.replace(/^\uFEFF/, ''); // buang BOM
+  text = text
+    .split('\n')
+    .filter((line) => !/^\s*DELIMITER\s+/i.test(line))
+    .join('\n');
+  text = text.replace(/;\s*;+/g, ';'); // gabung ";;" jadi ";"
+  return text.trim();
+}
+
 async function importSqlContent(databaseUuid, dbName, sqlContent) {
   const info = await getConnectionInfoForDatabase(databaseUuid, dbName);
   const url = new URL(info.connectionString);
@@ -528,7 +548,7 @@ async function importSqlContent(databaseUuid, dbName, sqlContent) {
     multipleStatements: true,
   });
   try {
-    await conn.query(sqlContent);
+    await conn.query(sanitizeSqlContent(sqlContent));
   } finally {
     await conn.end().catch(() => {});
   }
