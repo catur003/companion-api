@@ -2,7 +2,7 @@
 
 const path = require('path').posix;
 const tar = require('tar-stream');
-const { docker } = require('../docker/docker');
+const { docker, resolveContainerIdByAppUuid } = require('../docker/docker');
 const config = require('../config/config');
 
 /**
@@ -88,34 +88,40 @@ function buildSingleFileTar(filename, content) {
   return pack;
 }
 
-async function readFile(containerId, relativePath) {
+async function readFile(applicationUuid, relativePath) {
   const target = resolveSafePath(relativePath);
   try {
+    // Resolve container ID aktif dulu dari applicationUuid (stabil) -- ID
+    // Docker mentah BERUBAH tiap redeploy (temuan sama kayak restart-count,
+    // lihat docker.js). Jangan pernah terima/percaya container ID mentah
+    // dari caller lagi.
+    const containerId = await resolveContainerIdByAppUuid(applicationUuid);
     const container = docker.getContainer(containerId);
     const stream = await container.getArchive({ path: target });
     return await extractSingleFileFromTar(stream);
   } catch (err) {
     throw new Error(
-      `Tidak bisa akses "${relativePath}" di container "${containerId}" -- ` +
-      `cek container masih jalan & path benar. (${err.message})`
+      `Tidak bisa akses "${relativePath}" di app "${applicationUuid}" -- ` +
+      `cek app masih jalan & path benar. (${err.message})`
     );
   }
 }
 
-async function writeFile(containerId, relativePath, content) {
+async function writeFile(applicationUuid, relativePath, content) {
   const target = resolveSafePath(relativePath);
   const dir = path.dirname(target);
   const filename = path.basename(target);
 
   try {
+    const containerId = await resolveContainerIdByAppUuid(applicationUuid);
     const container = docker.getContainer(containerId);
     const tarStream = buildSingleFileTar(filename, content);
     await container.putArchive(tarStream, { path: dir });
     return true;
   } catch (err) {
     throw new Error(
-      `Gagal tulis "${relativePath}" di container "${containerId}" -- ` +
-      `cek container masih jalan & folder tujuan ada. (${err.message})`
+      `Gagal tulis "${relativePath}" di app "${applicationUuid}" -- ` +
+      `cek app masih jalan & folder tujuan ada. (${err.message})`
     );
   }
 }

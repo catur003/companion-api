@@ -126,7 +126,17 @@ sudo swapon /swapfile
 echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 ```
 
-## 10. Kredensial yang udah pernah diketik di chat/terminal = anggap terekspos
+## 10. `internal_db_url` gak bisa di-resolve dari proses host biasa
+
+Hostname di `internal_db_url` (Bagian 8) itu Docker-internal DNS name, cuma
+resolve dari DALAM container yang nempel network Docker sama (embedded DNS
+`127.0.0.11`). Companion API jalan sebagai proses Node biasa di host (pm2,
+bukan container) — gagal dengan `getaddrinfo EAI_AGAIN`, BUKAN bug/config
+salah. Fix: `dbBrowser.js` resolve IP container-nya manual lewat Docker API
+(`resolveDockerHostToIp`), ganti hostname jadi IP sebelum connect — bypass
+DNS OS sepenuhnya. Sudah diimplementasi & confirmed jalan.
+
+## 11. Kredensial yang udah pernah diketik di chat/terminal = anggap terekspos
 
 Kalau password/token pernah di-paste manual (ke chat AI, ke command line
 riwayat, dll), jangan pakai itu buat production beneran — generate ulang.

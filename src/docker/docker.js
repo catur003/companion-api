@@ -14,6 +14,39 @@ const config = require('../config/config');
 const docker = new Docker({ socketPath: config.docker.socketPath });
 
 /**
+ * TEMUAN PENTING (tes nyata, 4 Agustus 2026): container app (Nixpacks) itu
+ * stateless DAN ID-nya berubah tiap redeploy -- container lama dihapus,
+ * dibuat baru dengan ID Docker baru. Container ID mentah (dipakai
+ * getRestartCount di bawah) jadi "basi" begitu ada redeploy pertama setelah
+ * ID itu dicatat di client (ZenVPS). applicationUuid Coolify TETAP, gak
+ * pernah berubah -- jadi resolve container ID dari applicationUuid dulu tiap
+ * request, bukan simpan/percaya container ID lama.
+ *
+ * Konvensi nama container Coolify: "{applicationUuid}-{timestamp}" (dikonfirmasi
+ * dari 2 observasi nyata: "bxpbj2db8xneyfquv7o9l1bk-210125729979" lalu setelah
+ * redeploy jadi "bxpbj2db8xneyfquv7o9l1bk-082640147852"). Kalau pola ini berubah
+ * di versi Coolify lain, fungsi ini gagal eksplisit (bukan nebak container salah).
+ */
+async function resolveContainerIdByAppUuid(applicationUuid) {
+  const containers = await docker.listContainers({ all: false });
+  const prefix = `/${applicationUuid}-`;
+
+  const matches = containers.filter((c) => c.Names.some((n) => n.startsWith(prefix)));
+
+  if (matches.length === 0) {
+    throw new Error(
+      `Gak ada container yang lagi jalan buat applicationUuid "${applicationUuid}" -- ` +
+      `app mungkin lagi stopped, atau baru aja redeploy (tunggu sebentar, coba lagi).`
+    );
+  }
+
+  // Kalau ada lebih dari 1 (kemungkinan kecil, mis. lagi transisi redeploy),
+  // ambil yang paling baru dibuat -- itu yang aktif sekarang.
+  matches.sort((a, b) => b.Created - a.Created);
+  return matches[0].Id;
+}
+
+/**
  * Ambil restart count container, setara pm2_env.restart_time di vps-manager lama.
  *
  * PENTING (Bagian 9, kebijakan error): kalau gagal, kembalikan error eksplisit --
@@ -42,4 +75,17 @@ async function getRestartCount(containerId) {
   }
 }
 
-module.exports = { docker, getRestartCount };
+/** Wrapper: resolve applicationUuid -> container ID aktif dulu, baru getRestartCount. */
+async function getRestartCountByAppUuid(applicationUuid) {
+  try {
+    const containerId = await resolveContainerIdByAppUuid(applicationUuid);
+    return await getRestartCount(containerId);
+  } catch (err) {
+    return {
+      ok: false,
+      error: `Gagal resolve container buat applicationUuid "${applicationUuid}": ${err.message}`,
+    };
+  }
+}
+
+module.exports = { docker, getRestartCount, getRestartCountByAppUuid, resolveContainerIdByAppUuid };
