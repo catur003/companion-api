@@ -22,6 +22,11 @@ const POLICY = Object.freeze({
   'db:query:mutate': { confirmRequired: true, auditLevel: 'warn' },
   // ALTER USER doang, endpoint terpisah dari mutation umum - lihat dbBrowser.js.
   'db:reset-password': { confirmRequired: true, auditLevel: 'warn' },
+  // Read-only, cuma informatif (nama schema di server, bukan isi datanya).
+  'db:list-schemas': { confirmRequired: false, auditLevel: 'info' },
+  // CREATE DATABASE + CREATE USER + GRANT ke database itu doang (via koneksi
+  // root, scoped ketat) - bikin kredensial baru, wajib konfirmasi.
+  'db:create-schema': { confirmRequired: true, auditLevel: 'warn' },
 
   'db:migrate:generate': { confirmRequired: false, auditLevel: 'info' },
   'db:migrate:push': { confirmRequired: false, auditLevel: 'info' },

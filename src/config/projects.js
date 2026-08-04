@@ -84,6 +84,7 @@ function upsertProject(entry) {
     name: entry.name,
     applicationUuid: entry.applicationUuid,
     ...(entry.databaseUuid ? { databaseUuid: entry.databaseUuid } : {}),
+    ...(entry.schemaName ? { schemaName: entry.schemaName } : {}),
   };
 
   if (idx >= 0) {

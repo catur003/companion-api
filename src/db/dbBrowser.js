@@ -113,6 +113,118 @@ async function getLiveConnectionString(databaseUuid) {
 }
 
 /**
+ * Buat operasi yang butuh privilege tinggi (CREATE DATABASE, CREATE USER,
+ * GRANT) -- internal_db_url biasa itu user app scoped (belum tentu punya
+ * privilege itu). Coolify balikin "mysql_root_password" plaintext terpisah
+ * di response yang sama (dikonfirmasi dari komentar keamanan di atas) --
+ * susun connection string root manual: host/port SAMA dari internal_db_url,
+ * ganti username jadi "root" + password root.
+ *
+ * PERINGATAN KEAMANAN: password root ini SANGAT sensitif, LEBIH dari
+ * password user app biasa -- jangan pernah audit.record(), log, atau
+ * kembalikan ke response Companion API dalam bentuk apapun.
+ */
+async function fetchRootConnectionInfo(databaseUuid) {
+  if (!config.coolify.apiBaseUrl || !config.coolify.apiToken) {
+    throw new Error('[dbBrowser] COOLIFY_API_BASE_URL / COOLIFY_API_TOKEN belum diisi.');
+  }
+
+  const data = await fetchDatabaseByUuid(databaseUuid);
+
+  if (!data.internal_db_url) {
+    throw new Error(`[dbBrowser] Database "${databaseUuid}" tidak punya "internal_db_url".`);
+  }
+  if (!data.mysql_root_password) {
+    throw new Error(
+      `[dbBrowser] Database "${databaseUuid}" gak punya "mysql_root_password" -- ` +
+      `kemungkinan bukan MySQL/MariaDB (fitur ini baru dukung itu).`
+    );
+  }
+
+  const url = new URL(data.internal_db_url);
+  url.username = 'root';
+  url.password = encodeURIComponent(data.mysql_root_password);
+
+  return { connectionString: url.toString(), databaseType: data.database_type || '' };
+}
+
+/**
+ * Identifier (nama database/user) gak bisa di-parameterize kayak value biasa
+ * -- validasi ketat whitelist char, cegah SQL injection lewat backtick-embed.
+ */
+function assertSafeIdentifier(name, label) {
+  if (!name || !/^[a-zA-Z0-9_]+$/.test(name)) {
+    throw new Error(`[dbBrowser] ${label} "${name}" gak valid -- cuma boleh huruf/angka/underscore.`);
+  }
+}
+
+/**
+ * List semua schema/database di 1 server MySQL -- buat "Numpang Server yang
+ * Ada" pas bikin database baru (informatif, biar user liat nama yang udah
+ * kepake, cegah tabrakan nama) DAN buat browse DB (resolve nama schema kalau
+ * project numpang, bukan schema default). Pakai koneksi ROOT (user app
+ * biasa kemungkinan gak bisa liat schema lain via information_schema).
+ */
+async function listSchemas(databaseUuid) {
+  const { connectionString, databaseType } = await fetchRootConnectionInfo(databaseUuid);
+  const resolved = await rewriteConnectionStringHost(connectionString);
+  const t = (databaseType || '').toLowerCase();
+
+  if (!t.includes('mysql') && !t.includes('mariadb')) {
+    throw new Error(`[dbBrowser] listSchemas belum didukung buat database_type "${databaseType}" (baru MySQL/MariaDB).`);
+  }
+
+  const mysql = require('mysql2/promise');
+  const conn = await mysql.createConnection(resolved);
+  try {
+    const [rows] = await conn.query(
+      "SELECT schema_name AS name FROM information_schema.schemata WHERE schema_name NOT IN ('information_schema','mysql','performance_schema','sys') ORDER BY schema_name"
+    );
+    return rows.map((r) => r.name);
+  } finally {
+    await conn.end().catch(() => {});
+  }
+}
+
+/**
+ * Bikin schema (database) + user baru DI SERVER MySQL yang UDAH ADA --
+ * "numpang" 1 mysqld buat banyak project, gak bikin container baru tiap
+ * project (hemat RAM, sama pola kayak vps-manager lama). SENGAJA endpoint
+ * TERPISAH dari mutation umum -- cuma CREATE DATABASE/USER + GRANT ke
+ * database itu doang, bukan mutation bebas. Wajib confirmed:true (bikin
+ * user/kredensial baru, bukan aksi trivial).
+ */
+async function createSchema(databaseUuid, { newDbName, newUser, newPassword }) {
+  assertSafeIdentifier(newDbName, 'Nama database');
+  assertSafeIdentifier(newUser, 'Username');
+  if (!newPassword) {
+    throw new Error('[dbBrowser] Password wajib diisi.');
+  }
+
+  const { connectionString, databaseType } = await fetchRootConnectionInfo(databaseUuid);
+  const resolved = await rewriteConnectionStringHost(connectionString);
+  const t = (databaseType || '').toLowerCase();
+
+  if (!t.includes('mysql') && !t.includes('mariadb')) {
+    throw new Error(`[dbBrowser] createSchema belum didukung buat database_type "${databaseType}" (baru MySQL/MariaDB).`);
+  }
+
+  const mysql = require('mysql2/promise');
+  const conn = await mysql.createConnection(resolved);
+  try {
+    // Identifier udah divalidasi ketat di atas (assertSafeIdentifier) --
+    // backtick-embed di sini aman, bukan dari input mentah tanpa filter.
+    await conn.query(`CREATE DATABASE IF NOT EXISTS \`${newDbName}\``);
+    await conn.query('CREATE USER IF NOT EXISTS ?@? IDENTIFIED BY ?', [newUser, '%', newPassword]);
+    await conn.query(`GRANT ALL PRIVILEGES ON \`${newDbName}\`.* TO ?@?`, [newUser, '%']);
+  } finally {
+    await conn.end().catch(() => {});
+  }
+
+  return { newDbName, newUser };
+}
+
+/**
  * startsWith('select') doang gampang dibobol: comment sebelum keyword
  * (/*x*\/SELECT), CTE yang isinya mutasi (WITH x AS (INSERT ...) SELECT ...),
  * atau multi-statement (SELECT 1; DROP TABLE ...). Validasi ini bukan pengganti
@@ -196,11 +308,27 @@ function pickDriver(databaseType) {
   );
 }
 
-async function runSelectQuery(databaseUuid, sql) {
+/**
+ * schemaOverride (BARU, 4 Agustus 2026): buat project yang "numpang" 1 server
+ * MySQL (bukan schema default Coolify) -- ganti path connection string ke
+ * schema yang bener SEBELUM connect. TANPA ini, query bakal jalan ke schema
+ * default server itu (mungkin punya project LAIN), bukan schema project yang
+ * dimaksud -- silent-wrong yang paling bahaya (query "berhasil", tapi data
+ * project yang salah). WAJIB dipakai kalau project.schemaName keisi.
+ */
+async function runSelectQuery(databaseUuid, sql, schemaOverride) {
   assertSafeSelect(sql);
 
   const { connectionString, databaseType } = await fetchConnectionInfo(databaseUuid);
-  const resolvedConnectionString = await rewriteConnectionStringHost(connectionString);
+  let finalConnectionString = connectionString;
+  if (schemaOverride) {
+    assertSafeIdentifier(schemaOverride, 'Nama schema');
+    const url = new URL(connectionString);
+    url.pathname = `/${schemaOverride}`;
+    finalConnectionString = url.toString();
+  }
+
+  const resolvedConnectionString = await rewriteConnectionStringHost(finalConnectionString);
   const execute = pickDriver(databaseType);
 
   const { rows, columns } = await execute(resolvedConnectionString, sql);
@@ -236,7 +364,11 @@ async function resetPassword(databaseUuid, newPassword) {
       // Placeholder ? di posisi account-spec ('user'@'host') tetap aman --
       // mysql2 auto-quote string value, hasilnya persis syntax yang dibutuhin.
       await conn.query('ALTER USER ?@? IDENTIFIED BY ?', [username, '%', newPassword]);
-      await conn.query('FLUSH PRIVILEGES');
+      // FIX (4 Agustus 2026): FLUSH PRIVILEGES DIHAPUS -- itu gak diperlukan
+      // sama sekali setelah ALTER USER (beda dari cara lama edit tabel
+      // mysql.user langsung), DAN gagal ("need RELOAD privilege") karena
+      // user app (bukan root) emang gak dikasih privilege RELOAD. ALTER USER
+      // udah langsung efektif tanpa flush apapun.
     } finally {
       await conn.end().catch(() => {});
     }
@@ -259,4 +391,4 @@ async function resetPassword(databaseUuid, newPassword) {
   return { username };
 }
 
-module.exports = { getLiveConnectionString, runSelectQuery, resetPassword };
+module.exports = { getLiveConnectionString, runSelectQuery, resetPassword, listSchemas, createSchema };
