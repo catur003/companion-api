@@ -32,7 +32,9 @@ const config = {
     // ke instance nyata. Field-field yang dipakai di src/db/dbBrowser.js dan
     // src/migrate/*.js masih ASUMSI dari OpenAPI spec, wajib dicek ulang begitu
     // ada instance Coolify hidup (Fase 0-1).
-    apiBaseUrl: requireEnv('COOLIFY_API_BASE_URL', { optional: true }),
+    // .replace(/\/+$/, '') -- buang trailing slash biar gak double-slash pas
+    // di-gabung sama path /api/v1/... di tempat lain (dbBrowser.js, coolifyDeploy.js).
+    apiBaseUrl: (requireEnv('COOLIFY_API_BASE_URL', { optional: true }) || '').replace(/\/+$/, '') || undefined,
     apiToken: requireEnv('COOLIFY_API_TOKEN', { optional: true }),
   },
 
