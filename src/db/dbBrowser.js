@@ -214,4 +214,49 @@ async function runSelectQuery(databaseUuid, sql) {
   };
 }
 
-module.exports = { getLiveConnectionString, runSelectQuery };
+/**
+ * SENGAJA fungsi TERPISAH dari runSelectQuery, BUKAN buka pintu mutation
+ * umum. Cuma bisa jalanin 1 hal spesifik: ALTER USER buat ganti password
+ * user yang sama persis kayak yang ada di internal_db_url (username diambil
+ * dari situ, BUKAN dari input user - user cuma kasih password baru).
+ * confirmed:true wajib (lihat commandPolicy.js) - ganti password disconnect
+ * semua koneksi yang masih pakai password lama sampai env di-update.
+ */
+async function resetPassword(databaseUuid, newPassword) {
+  const { connectionString, databaseType } = await fetchConnectionInfo(databaseUuid);
+  const resolvedConnectionString = await rewriteConnectionStringHost(connectionString);
+  const username = decodeURIComponent(new URL(connectionString).username);
+
+  const t = (databaseType || '').toLowerCase();
+
+  if (t.includes('mysql') || t.includes('mariadb')) {
+    const mysql = require('mysql2/promise');
+    const conn = await mysql.createConnection(resolvedConnectionString);
+    try {
+      // Placeholder ? di posisi account-spec ('user'@'host') tetap aman --
+      // mysql2 auto-quote string value, hasilnya persis syntax yang dibutuhin.
+      await conn.query('ALTER USER ?@? IDENTIFIED BY ?', [username, '%', newPassword]);
+      await conn.query('FLUSH PRIVILEGES');
+    } finally {
+      await conn.end().catch(() => {});
+    }
+  } else if (t.includes('postgres')) {
+    const { Client } = require('pg');
+    const client = new Client({ connectionString: resolvedConnectionString });
+    await client.connect();
+    try {
+      // Postgres: password BISA di-parameterize ($1), username (identifier)
+      // gak bisa -- tapi itu dari internal_db_url Coolify sendiri (trusted),
+      // bukan input user, jadi aman di-embed langsung (tetap di-escape kutip).
+      await client.query(`ALTER USER "${username.replace(/"/g, '""')}" WITH PASSWORD $1`, [newPassword]);
+    } finally {
+      await client.end().catch(() => {});
+    }
+  } else {
+    throw new Error(`[dbBrowser] Reset password belum didukung buat database_type "${databaseType}".`);
+  }
+
+  return { username };
+}
+
+module.exports = { getLiveConnectionString, runSelectQuery, resetPassword };

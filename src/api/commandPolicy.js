@@ -20,6 +20,8 @@ const POLICY = Object.freeze({
 
   'db:query:select': { confirmRequired: false, auditLevel: 'info' },
   'db:query:mutate': { confirmRequired: true, auditLevel: 'warn' },
+  // ALTER USER doang, endpoint terpisah dari mutation umum - lihat dbBrowser.js.
+  'db:reset-password': { confirmRequired: true, auditLevel: 'warn' },
 
   'db:migrate:generate': { confirmRequired: false, auditLevel: 'info' },
   'db:migrate:push': { confirmRequired: false, auditLevel: 'info' },

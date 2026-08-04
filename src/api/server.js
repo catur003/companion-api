@@ -7,6 +7,7 @@ const restartCountRoutes = require('./routes/restartCount.routes');
 const dbMigrateRoutes = require('./routes/dbMigrate.routes');
 const filesRoutes = require('./routes/files.routes');
 const dbQueryRoutes = require('./routes/dbQuery.routes');
+const dbAdminRoutes = require('./routes/dbAdmin.routes');
 const projectsRoutes = require('./routes/projects.routes');
 
 function createServer() {
@@ -24,6 +25,7 @@ function createServer() {
   app.use(dbMigrateRoutes);
   app.use(filesRoutes);
   app.use(dbQueryRoutes);
+  app.use(dbAdminRoutes);
   app.use(projectsRoutes);
 
   // 404 eksplisit -- bukan HTML default Express.
