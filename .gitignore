@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# Secrets - JANGAN PERNAH COMMIT
+.env
+databases.json
+# ^ PASSWORD PLAINTEXT tersimpan di sini (lihat komentar di
+#   src/config/databases.js) - pengecualian sengaja dari prinsip
+#   "gak pernah simpan kredensial", karena Coolify gak expose endpoint
+#   buat ambil kredensial database yang "numpang". Kalau ini ke-commit,
+#   anggap semua password di dalamnya bocor - rotate semua, bukan cuma
+#   hapus dari git history.
+push-token.json
+# ^ token push notification device - data personal/device-specific,
+#   beda tiap orang yang deploy Companion API ini, gak relevan buat
+#   siapapun selain 1 device yang make.
+
+# Runtime data - dibikin otomatis pas jalan, beda tiap environment/waktu
+jobs.json
+logs/
+
+# JANGAN ditambah ke sini: package-lock.json (WAJIB dicommit, bukan
+# di-gitignore - kuncinya versi dependency biar reproducible install di
+# environment lain), projects.json (config yang emang dimaksudkan diedit
+# manual & dicommit, isinya cuma UUID/nama - bukan kredensial).
