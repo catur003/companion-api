@@ -12,6 +12,9 @@ const dbImportExportRoutes = require('./routes/dbImportExport.routes');
 const systemRoutes = require('./routes/system.routes');
 const projectsRoutes = require('./routes/projects.routes');
 const diagnosticsRoutes = require('./routes/diagnostics.routes');
+const auditRoutes = require('./routes/audit.routes');
+const pushRoutes = require('./routes/push.routes');
+const webhookRoutes = require('./routes/webhook.routes');
 
 function createServer() {
   const app = express();
@@ -21,6 +24,10 @@ function createServer() {
   app.get('/health', (req, res) => {
     res.json({ success: true, message: 'Companion API jalan.', code: 'OK', data: null });
   });
+
+  // Webhook Coolify -- SENGAJA di luar authMiddleware (Coolify yang manggil,
+  // bukan ZenVPS) - proteksinya lewat secret di path, lihat webhook.routes.js.
+  app.use(webhookRoutes);
 
   app.use(authMiddleware);
 
@@ -33,6 +40,8 @@ function createServer() {
   app.use(systemRoutes);
   app.use(projectsRoutes);
   app.use(diagnosticsRoutes);
+  app.use(auditRoutes);
+  app.use(pushRoutes);
 
   // 404 eksplisit -- bukan HTML default Express.
   app.use((req, res) => {

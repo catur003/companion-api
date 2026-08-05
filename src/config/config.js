@@ -59,6 +59,17 @@ const config = {
   audit: {
     logDir: process.env.AUDIT_LOG_DIR || './logs',
   },
+
+  // Webhook Coolify -> push notification (5 Agustus 2026). Optional secara
+  // teknis (requireEnv optional:true) TAPI endpoint webhook menolak semua
+  // request kalau ini kosong (lihat webhook.routes.js) - lebih baik fitur
+  // gak aktif sama sekali daripada endpoint publik tanpa proteksi sama
+  // sekali (endpoint ini SENGAJA di luar authMiddleware Bearer token biasa,
+  // karena Coolify manggil webhook custom gak selalu bisa disetel kirim
+  // header Authorization).
+  webhook: {
+    secret: requireEnv('COOLIFY_WEBHOOK_SECRET', { optional: true }),
+  },
 };
 
 module.exports = config;

@@ -54,6 +54,13 @@ const POLICY = Object.freeze({
   // Env var di-mask server-side sebelum dikirim (lihat maskEnvEntries di docker.js).
   'diagnostics:containers:read': { confirmRequired: false, auditLevel: 'info' },
 
+  // Baca riwayat audit log (fitur Audit Log ZenVPS) - read-only murni.
+  'audit:read': { confirmRequired: false, auditLevel: 'info' },
+
+  // Simpan push token device (fitur notifikasi) - bukan aksi destruktif,
+  // gak perlu konfirmasi.
+  'push-token:write': { confirmRequired: false, auditLevel: 'info' },
+
   // Dashboard VPS info (CPU/RAM/disk/dst) - read-only, gak butuh sudo.
   'system:status:read': { confirmRequired: false, auditLevel: 'info' },
   // Diagnostik keamanan (firewall/fail2ban/ssh-config/ports) - read-only,
