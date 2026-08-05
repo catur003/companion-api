@@ -50,6 +50,10 @@ const POLICY = Object.freeze({
 
   'container:restart-count:read': { confirmRequired: false, auditLevel: 'info' },
 
+  // Tab Diagnostik - docker ps/inspect/stats, READ-ONLY MURNI (Bagian 8).
+  // Env var di-mask server-side sebelum dikirim (lihat maskEnvEntries di docker.js).
+  'diagnostics:containers:read': { confirmRequired: false, auditLevel: 'info' },
+
   // Dashboard VPS info (CPU/RAM/disk/dst) - read-only, gak butuh sudo.
   'system:status:read': { confirmRequired: false, auditLevel: 'info' },
   // Diagnostik keamanan (firewall/fail2ban/ssh-config/ports) - read-only,

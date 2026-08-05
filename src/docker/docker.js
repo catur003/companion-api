@@ -169,10 +169,156 @@ async function listDirectoryByAppUuid(applicationUuid, targetPath) {
   return listDirectoryByContainerId(containerId, targetPath);
 }
 
+/**
+ * Batch B (5 Agustus 2026) -- Tab Diagnostik: docker ps / stats / inspect,
+ * READ-ONLY MURNI (prinsip Bagian 8: scope Docker API ke `docker inspect`,
+ * BUKAN start/stop/exec). Beda dari restart-count/file-manager di atas --
+ * ini gak resolve by applicationUuid, nunjukin SEMUA container di host
+ * (termasuk infra Coolify sendiri: coolify-db, coolify-proxy, dst) apa
+ * adanya, karena tujuannya diagnostik VPS secara umum, bukan per-app.
+ */
+
+/** Key env var yang nilainya WAJIB di-mask -- password/token/secret/key/credential/auth, case-insensitive. */
+const SENSITIVE_ENV_KEY_PATTERN = /PASSWORD|SECRET|TOKEN|KEY|CREDENTIAL|AUTH|PRIVATE/i;
+
+function maskEnvEntries(envArray) {
+  return (envArray || []).map((line) => {
+    const idx = line.indexOf('=');
+    if (idx === -1) return { key: line, value: '', masked: false };
+    const key = line.slice(0, idx);
+    const value = line.slice(idx + 1);
+    const sensitive = SENSITIVE_ENV_KEY_PATTERN.test(key);
+    return { key, value: sensitive ? '••••••••' : value, masked: sensitive };
+  });
+}
+
+/** docker ps (all=true, termasuk yang stopped) -- list ringkas buat tab Diagnostik. */
+async function listAllContainers() {
+  const containers = await docker.listContainers({ all: true });
+  return containers
+    .map((c) => ({
+      id: c.Id.slice(0, 12),
+      fullId: c.Id,
+      name: (c.Names?.[0] || '').replace(/^\//, ''),
+      image: c.Image,
+      state: c.State, // 'running' | 'exited' | 'created' | dst
+      status: c.Status, // human-readable, misal "Up 3 hours"
+      createdAt: new Date(c.Created * 1000).toISOString(),
+      ports: (c.Ports || []).map((p) => ({
+        private: p.PrivatePort ?? null,
+        public: p.PublicPort ?? null,
+        type: p.Type ?? null,
+      })),
+    }))
+    // Running dulu baru yang stopped, dalam tiap grup urut nama -- biar konsisten,
+    // bukan urutan acak dari Docker API.
+    .sort((a, b) => {
+      if (a.state === 'running' && b.state !== 'running') return -1;
+      if (a.state !== 'running' && b.state === 'running') return 1;
+      return a.name.localeCompare(b.name);
+    });
+}
+
+/**
+ * Gabungan inspect + stats (one-shot, BUKAN stream) buat 1 container, di-flatten
+ * jadi field yang manusiawi -- ZenVPS gak perlu ngerti format mentah Docker API.
+ * Kalau container gak jalan (stopped), stats-nya dilewatin (Docker API nolak
+ * `stats` buat container non-running), inspect tetap jalan.
+ */
+async function getContainerDetail(containerId) {
+  const container = docker.getContainer(containerId);
+
+  let info;
+  try {
+    info = await container.inspect();
+  } catch (err) {
+    throw new Error(`Container "${containerId}" tidak ditemukan: ${err.message}`);
+  }
+
+  const base = {
+    id: info.Id.slice(0, 12),
+    fullId: info.Id,
+    name: (info.Name || '').replace(/^\//, ''),
+    image: info.Config?.Image ?? null,
+    state: info.State?.Status ?? 'unknown',
+    startedAt: info.State?.StartedAt ?? null,
+    finishedAt: info.State?.Status === 'running' ? null : info.State?.FinishedAt ?? null,
+    restartCount: info.RestartCount ?? null,
+    restartPolicy: info.HostConfig?.RestartPolicy?.Name ?? 'unknown',
+    createdAt: info.Created ?? null,
+    networks: Object.keys(info.NetworkSettings?.Networks || {}),
+    ports: Object.entries(info.NetworkSettings?.Ports || {}).map(([containerPort, bindings]) => ({
+      containerPort,
+      hostBindings: (bindings || []).map((b) => `${b.HostIp || '0.0.0.0'}:${b.HostPort}`),
+    })),
+    mounts: (info.Mounts || []).map((m) => ({
+      type: m.Type,
+      source: m.Source,
+      destination: m.Destination,
+      readOnly: m.RW === false,
+    })),
+    env: maskEnvEntries(info.Config?.Env),
+    resources: null, // diisi di bawah kalau state running
+  };
+
+  if (base.state !== 'running') {
+    return base;
+  }
+
+  // Container.stats({stream:false}) -- one-shot snapshot, BUKAN stream
+  // kontinu (yang butuh koneksi kebuka terus, gak cocok buat 1x request REST).
+  let stats;
+  try {
+    stats = await container.stats({ stream: false });
+  } catch (err) {
+    // Stats gagal (jarang, misal container baru banget transisi state) --
+    // tetap balikin info dasar, jangan gagal total (kebijakan Bagian 9).
+    base.resourcesError = `Gagal ambil stats: ${err.message}`;
+    return base;
+  }
+
+  base.resources = computeHumanReadableStats(stats);
+  return base;
+}
+
+/** Rumus sama persis kayak yang dipakai `docker stats` CLI asli, biar angkanya konsisten sama yang tim udah biasa baca manual lewat SSH. */
+function computeHumanReadableStats(stats) {
+  const cpuDelta = (stats.cpu_stats?.cpu_usage?.total_usage ?? 0) - (stats.precpu_stats?.cpu_usage?.total_usage ?? 0);
+  const systemDelta = (stats.cpu_stats?.system_cpu_usage ?? 0) - (stats.precpu_stats?.system_cpu_usage ?? 0);
+  const onlineCpus = stats.cpu_stats?.online_cpus ?? stats.cpu_stats?.cpu_usage?.percpu_usage?.length ?? 1;
+  const cpuPercent = systemDelta > 0 && cpuDelta > 0 ? (cpuDelta / systemDelta) * onlineCpus * 100 : 0;
+
+  const memUsageRaw = stats.memory_stats?.usage ?? 0;
+  const memCache = stats.memory_stats?.stats?.cache ?? stats.memory_stats?.stats?.inactive_file ?? 0;
+  const memUsage = Math.max(memUsageRaw - memCache, 0);
+  const memLimit = stats.memory_stats?.limit ?? 0;
+  const memPercent = memLimit > 0 ? (memUsage / memLimit) * 100 : 0;
+
+  const netRx = Object.values(stats.networks || {}).reduce((sum, n) => sum + (n.rx_bytes || 0), 0);
+  const netTx = Object.values(stats.networks || {}).reduce((sum, n) => sum + (n.tx_bytes || 0), 0);
+
+  const blkRead = (stats.blkio_stats?.io_service_bytes_recursive || []).find((e) => e.op === 'Read')?.value ?? 0;
+  const blkWrite = (stats.blkio_stats?.io_service_bytes_recursive || []).find((e) => e.op === 'Write')?.value ?? 0;
+
+  return {
+    cpuPercent: Number(cpuPercent.toFixed(2)),
+    memUsageMB: Number((memUsage / 1024 / 1024).toFixed(2)),
+    memLimitMB: Number((memLimit / 1024 / 1024).toFixed(2)),
+    memPercent: Number(memPercent.toFixed(2)),
+    netRxMB: Number((netRx / 1024 / 1024).toFixed(2)),
+    netTxMB: Number((netTx / 1024 / 1024).toFixed(2)),
+    blockReadMB: Number((blkRead / 1024 / 1024).toFixed(2)),
+    blockWriteMB: Number((blkWrite / 1024 / 1024).toFixed(2)),
+    pids: stats.pids_stats?.current ?? null,
+  };
+}
+
 module.exports = {
   docker,
   getRestartCount,
   getRestartCountByAppUuid,
   resolveContainerIdByAppUuid,
   listDirectoryByAppUuid,
+  listAllContainers,
+  getContainerDetail,
 };

@@ -11,6 +11,7 @@ const dbAdminRoutes = require('./routes/dbAdmin.routes');
 const dbImportExportRoutes = require('./routes/dbImportExport.routes');
 const systemRoutes = require('./routes/system.routes');
 const projectsRoutes = require('./routes/projects.routes');
+const diagnosticsRoutes = require('./routes/diagnostics.routes');
 
 function createServer() {
   const app = express();
@@ -31,6 +32,7 @@ function createServer() {
   app.use(dbImportExportRoutes);
   app.use(systemRoutes);
   app.use(projectsRoutes);
+  app.use(diagnosticsRoutes);
 
   // 404 eksplisit -- bukan HTML default Express.
   app.use((req, res) => {
