@@ -33,4 +33,9 @@ function setPushToken(token) {
   return token;
 }
 
-module.exports = { getPushToken, setPushToken, getPushTokenFilePath };
+function clearPushToken() {
+  const filePath = getPushTokenFilePath();
+  if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+}
+
+module.exports = { getPushToken, setPushToken, clearPushToken, getPushTokenFilePath };

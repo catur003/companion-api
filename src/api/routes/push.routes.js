@@ -1,7 +1,7 @@
 'use strict';
 
 const express = require('express');
-const { setPushToken } = require('../../config/pushToken');
+const { setPushToken, clearPushToken } = require('../../config/pushToken');
 const { checkPolicy } = require('../commandPolicy');
 const audit = require('../../utils/audit');
 
@@ -28,6 +28,25 @@ router.post('/push-token', (req, res) => {
   } catch (err) {
     audit.record({ action: 'push-token:write', ok: false, error: err.message });
     return res.status(500).json({ success: false, message: err.message, code: 'PUSH_TOKEN_SAVE_FAILED', data: null });
+  }
+});
+
+// DELETE /push-token - dipanggil pas user MATIKAN toggle notifikasi di
+// ZenVPS. Hapus token tersimpan - webhook Coolify abis ini bakal gagal
+// kirim (ok, sengaja - itu behaviour yang diinginkan pas "off").
+router.delete('/push-token', (req, res) => {
+  const policy = checkPolicy('push-token:write');
+  if (!policy.allowed) {
+    return res.status(403).json({ success: false, message: policy.reason, code: 'POLICY_DENIED', data: null });
+  }
+
+  try {
+    clearPushToken();
+    audit.record({ action: 'push-token:delete', ok: true });
+    return res.json({ success: true, message: 'Push token dihapus.', code: 'OK', data: null });
+  } catch (err) {
+    audit.record({ action: 'push-token:delete', ok: false, error: err.message });
+    return res.status(500).json({ success: false, message: err.message, code: 'PUSH_TOKEN_DELETE_FAILED', data: null });
   }
 });
 
