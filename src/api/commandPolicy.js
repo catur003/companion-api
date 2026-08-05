@@ -50,6 +50,12 @@ const POLICY = Object.freeze({
 
   'container:restart-count:read': { confirmRequired: false, auditLevel: 'info' },
 
+  // Dashboard VPS info (CPU/RAM/disk/dst) - read-only, gak butuh sudo.
+  'system:status:read': { confirmRequired: false, auditLevel: 'info' },
+  // Diagnostik keamanan (firewall/fail2ban/ssh-config/ports) - read-only,
+  // TAPI butuh sudo di level OS (lihat catatan di system/security.js).
+  'system:security:read': { confirmRequired: false, auditLevel: 'info' },
+
   // Edit mapping project (key/name/applicationUuid/databaseUuid) - bukan
   // aksi destruktif ke infra Coolify/DB manapun, cuma edit file lokal
   // projects.json. Gak butuh konfirmasi.
