@@ -1,6 +1,7 @@
 'use strict';
 
 const Docker = require('dockerode');
+const { PassThrough } = require('stream');
 const config = require('../config/config');
 
 /**
@@ -368,38 +369,40 @@ async function execWhitelistedCommand(containerId, whitelistKey) {
 
   const stream = await exec.start({ hijack: true, stdin: false });
 
-  // Docker multiplexed stream (stdout+stderr digabung 1 socket) - perlu
-  // dockerode.modem.demuxStream buat misahin, atau baca mentah aja kalau
-  // cuma butuh teksnya buat ditampilin (cukup buat kasus key:generate --show,
-  // gak perlu bedain stdout/stderr secara ketat di sini).
-  const output = await new Promise((resolve, reject) => {
-    let data = '';
-    stream.on('data', (chunk) => {
-      data += chunk.toString('utf8');
-    });
-    stream.on('end', () => resolve(data));
+  // FIX (6 Agustus 2026, bug NYATA ketemu user - "Unsupported cipher" pas
+  // APP_KEY diterapkan): mitigasi lama (stripDockerFrameJunk, filter
+  // karakter printable doang) TERBUKTI SALAH - byte terakhir dari 8-byte
+  // frame header Docker (4 byte size, big-endian) kadang KEBETULAN jatuh
+  // di rentang ASCII printable (mis. panjang output tertentu bikin byte
+  // itu == karakter '0'-'9'), nyempil jadi karakter sampah DI TENGAH
+  // output tanpa kefilter - itu yang bikin APP_KEY korup.
+  //
+  // Fix beneran: pakai docker.modem.demuxStream() resmi dockerode, yang
+  // ngerti persis struktur 8-byte header per frame (bukan nebak-nebak byte
+  // mana yang "aneh") dan misahin stdout/stderr dengan benar.
+  const stdoutChunks = [];
+  const stderrChunks = [];
+  const stdoutStream = new PassThrough();
+  const stderrStream = new PassThrough();
+  stdoutStream.on('data', (chunk) => stdoutChunks.push(chunk));
+  stderrStream.on('data', (chunk) => stderrChunks.push(chunk));
+
+  docker.modem.demuxStream(stream, stdoutStream, stderrStream);
+
+  await new Promise((resolve, reject) => {
+    stream.on('end', resolve);
     stream.on('error', reject);
   });
 
+  const stdout = Buffer.concat(stdoutChunks).toString('utf8').trim();
+  const stderr = Buffer.concat(stderrChunks).toString('utf8').trim();
+
   const execInfo = await exec.inspect();
   if (execInfo.ExitCode !== 0) {
-    throw new Error(`Command exit code ${execInfo.ExitCode}. Output: ${stripDockerFrameJunk(output)}`);
+    throw new Error(`Command exit code ${execInfo.ExitCode}. Stderr: ${stderr || '(kosong)'}`);
   }
 
-  return stripDockerFrameJunk(output);
-}
-
-/**
- * Docker exec multiplexed stream punya 8-byte header binary tiap frame
- * (bukan cuma teks polos) - kalau gak di-demux dengan bener, hasilnya
- * kecampur karakter aneh. Strip karakter non-printable di awal tiap baris
- * sebagai mitigasi SEDERHANA (bukan demux yang proper) - CUKUP buat output
- * 1 baris pendek kayak APP_KEY, TAPI BELUM DITES ke output asli Docker,
- * kemungkinan perlu diganti demuxStream resmi dockerode kalau ternyata
- * masih ada karakter sampah nyangkut.
- */
-function stripDockerFrameJunk(raw) {
-  return raw.replace(/[^\x20-\x7E\n]/g, '').trim();
+  return stdout;
 }
 
 module.exports.execWhitelistedCommand = execWhitelistedCommand;
