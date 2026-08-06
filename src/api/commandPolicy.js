@@ -42,6 +42,12 @@ const POLICY = Object.freeze({
   // request mode ini walau harusnya diizinkan. Ketauan dari bug report user.
   'db:migrate:migrate': { confirmRequired: false, auditLevel: 'info' },
   'db:migrate:seed': { confirmRequired: true, auditLevel: 'warn' },
+  // Laravel (BARU 6 Agustus 2026) - "migrate_force" = `php artisan migrate --force`,
+  // WAJIB dipakai di production (Laravel nolak migrate tanpa --force kalau
+  // APP_ENV=production, demi cegah migrate gak sengaja) - TAPI tetap
+  // confirmRequired:true di sini karena sifatnya sama kayak push_force:
+  // bisa gagal/rusak data kalau migration-nya emang destruktif (drop column dst).
+  'db:migrate:migrate_force': { confirmRequired: true, auditLevel: 'warn' },
   // Command custom (bukan hasil generateCommand) - user compose/gabung sendiri
   // (mis. "push && seed" jadi 1 command biar gak 2x redeploy). SELALU minta
   // konfirmasi eksplisit, terlepas isinya apa - beda dari mode terstruktur di
@@ -60,6 +66,12 @@ const POLICY = Object.freeze({
   // Simpan push token device (fitur notifikasi) - bukan aksi destruktif,
   // gak perlu konfirmasi.
   'push-token:write': { confirmRequired: false, auditLevel: 'info' },
+
+  // Laravel (6 Agustus 2026) - `key:generate --show` doang, TIDAK nulis
+  // apa-apa (lihat komentar di laravel.routes.js) - aman diulang berkali-kali,
+  // gak perlu konfirmasi. Aksi DESTRUKTIF-nya (nge-set jadi APP_KEY beneran)
+  // itu di sisi ZenVPS lewat endpoint Coolify env vars, bukan di sini.
+  'laravel:key-generate': { confirmRequired: false, auditLevel: 'info' },
 
   // Dashboard VPS info (CPU/RAM/disk/dst) - read-only, gak butuh sudo.
   'system:status:read': { confirmRequired: false, auditLevel: 'info' },

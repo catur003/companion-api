@@ -15,6 +15,7 @@ const diagnosticsRoutes = require('./routes/diagnostics.routes');
 const auditRoutes = require('./routes/audit.routes');
 const pushRoutes = require('./routes/push.routes');
 const webhookRoutes = require('./routes/webhook.routes');
+const laravelRoutes = require('./routes/laravel.routes');
 
 function createServer() {
   const app = express();
@@ -42,6 +43,7 @@ function createServer() {
   app.use(diagnosticsRoutes);
   app.use(auditRoutes);
   app.use(pushRoutes);
+  app.use(laravelRoutes);
 
   // 404 eksplisit -- bukan HTML default Express.
   app.use((req, res) => {

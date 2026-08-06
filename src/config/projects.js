@@ -72,6 +72,13 @@ function upsertProject(entry) {
     throw new Error('[projects] Field wajib: key, name, applicationUuid.');
   }
 
+  // "type" (BARU 6 Agustus 2026) - 'nextjs' | 'laravel', dipakai ZenVPS buat
+  // nentuin pilihan mode migrate & fitur Laravel-only (key:generate) apa
+  // yang muncul di UI. Default 'nextjs' kalau gak diisi - project LAMA yang
+  // udah ke-upsert sebelum field ini ada TETAP KEBACA NORMAL (gak ada field
+  // ini di data lama = dianggap nextjs, bukan error).
+  const type = entry.type === 'laravel' ? 'laravel' : 'nextjs';
+
   const filePath = getProjectsFilePath();
   let current = [];
   if (fs.existsSync(filePath)) {
@@ -83,6 +90,7 @@ function upsertProject(entry) {
     key: entry.key,
     name: entry.name,
     applicationUuid: entry.applicationUuid,
+    type,
     ...(entry.databaseUuid ? { databaseUuid: entry.databaseUuid } : {}),
     ...(entry.schemaName ? { schemaName: entry.schemaName } : {}),
   };

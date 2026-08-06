@@ -322,3 +322,84 @@ module.exports = {
   listAllContainers,
   getContainerDetail,
 };
+
+/**
+ * Whitelist command Laravel yang boleh di-exec ke container YANG LAGI JALAN
+ * (BUKAN post-deployment command yang nunggu build berikutnya) - BARU
+ * (6 Agustus 2026). SENGAJA cuma daftar tetap, TIDAK nerima command bebas
+ * dari user - beda total dari "Terminal Cepat (Exec)" lama yang udah
+ * dihapus karena itu generic shell exec (resiko keamanan, backend-nya juga
+ * udah mati). Ini scope-nya sekecil mungkin: 1 command per key, gak ada
+ * parameter tambahan yang bisa disuntik user.
+ */
+const LARAVEL_EXEC_WHITELIST = {
+  'key:generate:show': ['php', 'artisan', 'key:generate', '--show'],
+};
+
+/**
+ * Exec 1 command dari whitelist di atas ke container yang lagi jalan
+ * (dockerode container.exec, BUKAN docker.listContainers/inspect yang
+ * cuma baca). Container HARUS running (kalau stopped, gak ada proses PHP
+ * buat nge-exec ke dalamnya).
+ */
+async function execWhitelistedCommand(containerId, whitelistKey) {
+  const cmd = LARAVEL_EXEC_WHITELIST[whitelistKey];
+  if (!cmd) {
+    throw new Error(`[docker] whitelistKey "${whitelistKey}" tidak dikenal - bukan bug user, ini bug kode.`);
+  }
+
+  const container = docker.getContainer(containerId);
+
+  let info;
+  try {
+    info = await container.inspect();
+  } catch (err) {
+    throw new Error(`Container "${containerId}" tidak ditemukan: ${err.message}`);
+  }
+  if (info.State?.Status !== 'running') {
+    throw new Error(`Container lagi "${info.State?.Status}", bukan "running" - app harus jalan dulu buat exec command ini.`);
+  }
+
+  const exec = await container.exec({
+    Cmd: cmd,
+    AttachStdout: true,
+    AttachStderr: true,
+  });
+
+  const stream = await exec.start({ hijack: true, stdin: false });
+
+  // Docker multiplexed stream (stdout+stderr digabung 1 socket) - perlu
+  // dockerode.modem.demuxStream buat misahin, atau baca mentah aja kalau
+  // cuma butuh teksnya buat ditampilin (cukup buat kasus key:generate --show,
+  // gak perlu bedain stdout/stderr secara ketat di sini).
+  const output = await new Promise((resolve, reject) => {
+    let data = '';
+    stream.on('data', (chunk) => {
+      data += chunk.toString('utf8');
+    });
+    stream.on('end', () => resolve(data));
+    stream.on('error', reject);
+  });
+
+  const execInfo = await exec.inspect();
+  if (execInfo.ExitCode !== 0) {
+    throw new Error(`Command exit code ${execInfo.ExitCode}. Output: ${stripDockerFrameJunk(output)}`);
+  }
+
+  return stripDockerFrameJunk(output);
+}
+
+/**
+ * Docker exec multiplexed stream punya 8-byte header binary tiap frame
+ * (bukan cuma teks polos) - kalau gak di-demux dengan bener, hasilnya
+ * kecampur karakter aneh. Strip karakter non-printable di awal tiap baris
+ * sebagai mitigasi SEDERHANA (bukan demux yang proper) - CUKUP buat output
+ * 1 baris pendek kayak APP_KEY, TAPI BELUM DITES ke output asli Docker,
+ * kemungkinan perlu diganti demuxStream resmi dockerode kalau ternyata
+ * masih ada karakter sampah nyangkut.
+ */
+function stripDockerFrameJunk(raw) {
+  return raw.replace(/[^\x20-\x7E\n]/g, '').trim();
+}
+
+module.exports.execWhitelistedCommand = execWhitelistedCommand;
