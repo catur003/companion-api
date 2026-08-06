@@ -4,6 +4,7 @@ const express = require('express');
 const config = require('../../config/config');
 const { getPushToken } = require('../../config/pushToken');
 const { sendExpoPush } = require('../../utils/pushNotify');
+const { timingSafeEqual } = require('../../utils/timingSafeEqual');
 const audit = require('../../utils/audit');
 
 const router = express.Router();
@@ -15,6 +16,15 @@ const router = express.Router();
  * secret di PATH, dicocokin ke COOLIFY_WEBHOOK_SECRET - dipilih path
  * (bukan header custom) karena field konfigurasi webhook custom Coolify
  * paling umum cuma "URL", belum tentu ada slot header tambahan.
+ *
+ * ⚠️ KNOWN RISK (dicatat dari code review 6 Agustus 2026): secret di URL
+ * path berpotensi ke-CATAT di access log reverse proxy/Coolify kalau
+ * logging default aktif (access log lazimnya nyatet full URL request,
+ * termasuk path). Trade-off yang disengaja demi kompatibilitas config
+ * webhook Coolify yang cuma terima 1 field URL - TAPI konsekuensinya perlu
+ * disadari: (1) jangan expose log Coolify/Traefik ke pihak luar tanpa
+ * redaksi, (2) rotate COOLIFY_WEBHOOK_SECRET berkala (ganti env var + URL
+ * webhook di Coolify), bukan sekali set lalu dilupain selamanya.
  *
  * ⚠️ BELUM ADA VERIFIKASI LANGSUNG shape payload asli dari Coolify -
  * dokumentasi resmi nyebut ada "Webhook Payloads reference" tapi field
@@ -34,7 +44,11 @@ router.post('/webhooks/coolify/:secret', async (req, res) => {
     });
   }
 
-  if (req.params.secret !== config.webhook.secret) {
+  // FIX (6 Agustus 2026, dari code review): compare timing-safe, bukan `!==`
+  // biasa - konsisten sama pola tokensMatch di auth.js (sekarang sama-sama
+  // pakai util timingSafeEqual.js). Resiko aslinya kecil (secret acak +
+  // panjang), tapi gak ada alasan buat gak konsisten.
+  if (!timingSafeEqual(req.params.secret, config.webhook.secret)) {
     // Sengaja 404, bukan 403 - jangan kasih tau penyerang bahwa endpoint
     // ini ADA tapi secret-nya salah (least information disclosure).
     return res.status(404).json({ success: false, message: 'Not found', code: 'NOT_FOUND', data: null });

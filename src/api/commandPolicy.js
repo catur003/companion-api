@@ -27,6 +27,12 @@ const POLICY = Object.freeze({
   // CREATE DATABASE + CREATE USER + GRANT ke database itu doang (via koneksi
   // root, scoped ketat) - bikin kredensial baru, wajib konfirmasi.
   'db:create-schema': { confirmRequired: true, auditLevel: 'warn' },
+  // FIX (6 Agustus 2026, dari code review): dulu DELETE database ikut numpang
+  // policy 'db:create-schema' (alasan asli: "sama sensitifnya") - secara
+  // proteksi gak bocor (confirmRequired sama-sama true), TAPI audit log jadi
+  // menyesatkan buat forensik ("siapa hapus database X" nongolnya
+  // "db:create-schema", bukan hapus). Key sendiri, severity sama.
+  'db:drop-schema': { confirmRequired: true, auditLevel: 'warn' },
   // Import: eksekusi ISI FILE MENTAH (bukan query dibatasi kayak yang lain) -
   // paling "terbuka" dari semua endpoint, wajib konfirmasi.
   'db:import': { confirmRequired: true, auditLevel: 'warn' },

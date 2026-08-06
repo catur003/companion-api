@@ -1,22 +1,14 @@
 'use strict';
 
-const crypto = require('crypto');
 const config = require('../../config/config');
+const { timingSafeEqual } = require('../../utils/timingSafeEqual');
 
 /**
  * Bearer token auth -- pola sama seperti vps-manager sekarang, supaya ZenVPS
  * app gak perlu logic auth baru buat manggil Companion API.
  */
 function tokensMatch(a, b) {
-  const bufA = Buffer.from(a);
-  const bufB = Buffer.from(b);
-  // Panjang beda pasti gak match -- tapi tetap jangan short-circuit sebelum
-  // timingSafeEqual supaya gak bocorin info panjang lewat timing juga.
-  if (bufA.length !== bufB.length) {
-    crypto.timingSafeEqual(bufA, bufA); // buang waktu yang setara, hasil diabaikan
-    return false;
-  }
-  return crypto.timingSafeEqual(bufA, bufB);
+  return timingSafeEqual(a, b);
 }
 
 function authMiddleware(req, res, next) {

@@ -56,7 +56,11 @@ router.get('/db/containers/:databaseUuid/databases', async (req, res) => {
 router.delete('/db/containers/:databaseUuid/databases/:name', async (req, res) => {
   const { databaseUuid, name } = req.params;
 
-  const policy = checkPolicy('db:create-schema'); // pakai policy sama - dua-duanya sama sensitifnya
+  // FIX (6 Agustus 2026, dari code review): dulu ikut numpang policy
+  // 'db:create-schema' - proteksinya tetap aman (confirmRequired sama), tapi
+  // audit trail-nya nyesatin (drop kecatet sebagai create). Sekarang key
+  // sendiri: 'db:drop-schema'.
+  const policy = checkPolicy('db:drop-schema');
   if (!policy.allowed) {
     return res.status(403).json({ success: false, message: policy.reason, code: 'POLICY_DENIED', data: null });
   }
@@ -81,10 +85,10 @@ router.delete('/db/containers/:databaseUuid/databases/:name', async (req, res) =
     }
     await dbBrowser.dropSchema(databaseUuid, name, registryEntry.username);
     require('../../config/databases').deleteEntry(databaseUuid, name);
-    audit.record({ action: 'db:create-schema', databaseUuid, deletedDatabase: name, ok: true, auditLevel: policy.auditLevel });
+    audit.record({ action: 'db:drop-schema', databaseUuid, deletedDatabase: name, ok: true, auditLevel: policy.auditLevel });
     return res.json({ success: true, message: 'Database berhasil dihapus.', code: 'OK', data: null });
   } catch (err) {
-    audit.record({ action: 'db:create-schema', databaseUuid, deletedDatabase: name, ok: false, error: err.message });
+    audit.record({ action: 'db:drop-schema', databaseUuid, deletedDatabase: name, ok: false, error: err.message });
     return res.status(501).json({ success: false, message: err.message, code: 'NOT_READY', data: null });
   }
 });
